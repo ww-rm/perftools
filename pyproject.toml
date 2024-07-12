@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perftools"
+authors = [
+    {name = "ww-rm", email = "ww-rm@qq.com"},
+]
+description = "Android Simpleperf tool."
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+]
+
+dynamic = ["version", "readme"]
+
+[project.urls]
+"Homepage" = "https://github.com/ww-rm/perftools"
+"Issues" = "https://github.com/ww-rm/perftools/issues"
+"Documentation" = "https://perftools.readthedocs.io"
+
+[tool.setuptools]
+packages = ["perftools"]
+
+[tool.setuptools.dynamic]
+version = {attr = "perftools.__version__"}
+readme = {file = ["README.md"], content-type = "text/markdown"}
