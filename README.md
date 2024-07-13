@@ -3,7 +3,7 @@
 ## apkrepacker
 
 ```shell
-python -m perftools.apkrepacker --help
+$ python -m perftools.apkrepacker --help
 
 usage: apkrepacker.py [-h] [-i APK] [-o OUTPUT] [--enable-debuggable] [--enable-profileable]
 
