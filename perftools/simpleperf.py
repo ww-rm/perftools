@@ -1,6 +1,5 @@
 
 import os
-import signal
 import subprocess as sp
 from datetime import datetime
 from pathlib import Path
@@ -33,7 +32,7 @@ class RecordProc:
         if self.proc.returncode is not None:
             return True
 
-        # signal should be SIGINT/SIGTERM/SIGHUP, can't be SIGKILL
+        # TODO: check record post actions
         self.proc.terminate()
         self.proc.wait(timeout)
 

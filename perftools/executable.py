@@ -36,7 +36,7 @@ class BaseExecutable:
 
     def _exec_blocking(self, *args, input: Optional[bytes] = None, timeout: Optional[float] = None):
         args = [str(self.filepath), *map(str, args)]
-        logger.info("Exec: %s", args)
+        logger.info("Exec: %s", repr(" ".join(args)))
         p = sp.run(args, input=input, capture_output=True, timeout=timeout)
 
         if p.stdout:
@@ -49,7 +49,7 @@ class BaseExecutable:
 
     def _exec_nonblocking(self, *args):
         args = [str(self.filepath), *map(str, args)]
-        logger.info("Exec: %s", args)
+        logger.info("Exec: %s", repr(" ".join(args)))
         return sp.Popen(args, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE)
 
     def exec(self, *args, blocking: bool = True, input: Optional[bytes] = None, timeout: Optional[float] = None):
