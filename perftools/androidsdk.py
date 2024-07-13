@@ -64,15 +64,15 @@ class Sdk:
         self._build_tools.sort(key=lambda v: v.version)
         self._ndk.sort(key=lambda v: v.version)
 
-    def get_latest_buildtool(self) -> Optional[BuildTool]:
-        if len(self._build_tools) > 0:
-            return self._build_tools[-1]
-        return None
+    def get_latest_buildtool(self) -> BuildTool:
+        if len(self._build_tools) <= 0:
+            raise FileNotFoundError(f"build-tools not found in sdk {self.dir}")
+        return self._build_tools[-1]
 
-    def get_latest_ndk(self) -> Optional[Ndk]:
-        if len(self._ndk) > 0:
-            return self._ndk[-1]
-        return None
+    def get_latest_ndk(self) -> Ndk:
+        if len(self._ndk) <= 0:
+            raise FileNotFoundError(f"ndk not found in sdk {self.dir}")
+        return self._ndk[-1]
 
     def get_platformtools(self) -> PlatformTools:
         return self._platform_tools

@@ -46,11 +46,7 @@ class APKRepacker:
     DEFAULT_KS_PASSWORD = b"123456"
 
     def __init__(self, sdk_dir: Optional[StrPath] = None) -> None:
-        sdk = Sdk(sdk_dir)
-        buildtool = sdk.get_latest_buildtool()
-
-        if buildtool is None:
-            raise FileNotFoundError(f"build-tools not found in sdk {sdk.dir}")
+        buildtool = Sdk(sdk_dir).get_latest_buildtool()
 
         self._apksigner = ApkSigner(buildtool.apksigner)
         self._apktool = ApkTool(PACKAGE_BIN_DIR.joinpath("apktool.jar"))
@@ -114,7 +110,7 @@ def do_repack(
 
     # unpack apk to dir
     if not repacker.unpack(apk_path, apk_dir):
-        return False
+        raise RuntimeError("unpack failed")
 
     # do some modifications
     if enable_debuggable:
@@ -124,11 +120,11 @@ def do_repack(
 
     # pack and resign
     if not repacker.pack(apk_dir, apk_repack_path):
-        return False
+        raise RuntimeError("pack failed")
     if not repacker.align(apk_repack_path, apk_align_path):
-        return False
+        raise RuntimeError("align failed")
     if not repacker.sign(apk_align_path, apk_output_path):
-        return False
+        raise RuntimeError("sign failed")
 
 
 def main():

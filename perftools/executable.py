@@ -1,5 +1,6 @@
 import os
 import subprocess as sp
+from functools import wraps
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -9,7 +10,7 @@ from .logger import logger
 StrPath = Union[str, os.PathLike]
 
 
-def search_in_path(filename: str, search_dirs: Optional[List[StrPath]] = None) -> Optional[Path]:
+def search_in_path(filename: str, search_dirs: Optional[List[StrPath]] = None) -> Path:
     if search_dirs is None:
         search_dirs = os.get_exec_path()
     search_dirs.append(PACKAGE_BIN_DIR)
@@ -18,7 +19,8 @@ def search_in_path(filename: str, search_dirs: Optional[List[StrPath]] = None) -
         filepath = p.joinpath(filename)
         if filepath.is_file():
             return filepath.resolve()
-    return None
+
+    raise FileNotFoundError(f"{filename} not found")
 
 
 class BaseExecutable:
@@ -26,9 +28,6 @@ class BaseExecutable:
     def __init__(self, path: Optional[StrPath] = None) -> None:
         if path is None:
             path = search_in_path(self.filename)
-            if path is None:
-                raise FileNotFoundError(f"可执行文件 {self.filename} 未发现, 尝试添加到系统变量后重试.")
-
         self.filepath = Path(path).resolve()
 
     @property
@@ -61,9 +60,22 @@ class BaseExecutable:
 
 
 class Adb(BaseExecutable):
+
     @property
     def filename(self):
         return "adb.exe"
+
+    def exec(self, serial: str, *args, blocking: bool = True, input: Optional[bytes] = None, timeout: Optional[float] = None):
+        return super().exec("-s", serial, *args, blocking=blocking, input=input, timeout=timeout)
+
+    def push(self, serial: str, local_path: StrPath, device_path: str) -> sp.CompletedProcess[bytes]:
+        return self.exec(serial, "push", local_path, device_path)
+
+    def pull(self, serial: str, device_path: str, local_path: StrPath) -> sp.CompletedProcess[bytes]:
+        return self.exec(serial, "pull", device_path, local_path)
+
+    def shell(self, serial: str, *args, blocking: bool = True, input: Optional[bytes] = None, timeout: Optional[float] = None):
+        return self.exec(serial, "shell", *args, blocking=blocking, input=input, timeout=timeout)
 
 
 class ZipAlign(BaseExecutable):
