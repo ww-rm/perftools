@@ -20,34 +20,30 @@ if os.getenv("ANDROID_HOME"):
 
 class BaseToolDirectory:
     def __init__(self, directory: StrPath, version: Optional[str] = None) -> None:
-        self._dir = Path(directory).resolve()
-        self._version = version
-
-    @property
-    def version(self) -> Optional[str]:
-        return self._version
+        self.dir = Path(directory).resolve()
+        self.version = version
 
 
 class BuildTool(BaseToolDirectory):
-    @property
-    def apksigner(self) -> Path:
-        return self._dir.joinpath("lib", "apksigner.jar")
+    def __init__(self, directory: StrPath, version: Optional[str] = None) -> None:
+        super().__init__(directory, version)
 
-    @property
-    def zipalign(self) -> Path:
-        return self._dir.joinpath("zipalign.exe")
+        self.apksigner = self.dir.joinpath("lib", "apksigner.jar")
+        self.zipalign = self.dir.joinpath("zipalign.exe")
 
 
 class PlatformTools(BaseToolDirectory):
-    @property
-    def adb(self) -> Path:
-        return self._dir.joinpath("adb.exe")
+    def __init__(self, directory: StrPath, version: Optional[str] = None) -> None:
+        super().__init__(directory, version)
+
+        self.adb = self.dir.joinpath("adb.exe")
 
 
 class Ndk(BaseToolDirectory):
-    @property
-    def simpleperf(self) -> Path:
-        return self._dir.joinpath("simpleperf")
+    def __init__(self, directory: StrPath, version: Optional[str] = None) -> None:
+        super().__init__(directory, version)
+
+        self.simpleperf = self.dir.joinpath("simpleperf")
 
 
 class Sdk:
@@ -60,17 +56,13 @@ class Sdk:
             else:
                 raise FileNotFoundError(f"No valid Sdk found, try specify Sdk directory, {POSSIBLE_SDK_DIRS}")
 
-        self._dir = Path(directory).resolve()
-        self._build_tools = [BuildTool(d, d.name) for d in self._dir.joinpath("build-tools").iterdir()]
-        self._ndk = [Ndk(d, d.name) for d in self._dir.joinpath("ndk").iterdir()]
-        self._platform_tools = PlatformTools(self._dir.joinpath("platform-tools"))
+        self.dir = Path(directory).resolve()
+        self._build_tools = [BuildTool(d, d.name) for d in self.dir.joinpath("build-tools").iterdir()]
+        self._ndk = [Ndk(d, d.name) for d in self.dir.joinpath("ndk").iterdir()]
+        self._platform_tools = PlatformTools(self.dir.joinpath("platform-tools"))
 
         self._build_tools.sort(key=lambda v: v.version)
         self._ndk.sort(key=lambda v: v.version)
-
-    @property
-    def dir(self) -> Path:
-        return self._dir
 
     def get_latest_buildtool(self) -> Optional[BuildTool]:
         if len(self._build_tools) > 0:

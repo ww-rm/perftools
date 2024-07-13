@@ -28,18 +28,15 @@ class BaseExecutable:
             path = search_in_path(self.filename)
             if path is None:
                 raise FileNotFoundError(f"可执行文件 {self.filename} 未发现, 尝试添加到系统变量后重试.")
-        self._path = Path(path).resolve()
+
+        self.filepath = Path(path).resolve()
 
     @property
     def filename(self) -> str:
         raise NotImplementedError
 
-    @property
-    def filepath(self) -> Path:
-        return self._path
-
     def _exec_blocking(self, *args, input: Optional[bytes] = None, timeout: Optional[float] = None):
-        args = [str(self._path), *map(str, args)]
+        args = [str(self.filepath), *map(str, args)]
         logger.info("Exec: %s", args)
         p = sp.run(args, input=input, capture_output=True, timeout=timeout)
 
@@ -52,7 +49,7 @@ class BaseExecutable:
         return p
 
     def _exec_nonblocking(self, *args):
-        args = [str(self._path), *map(str, args)]
+        args = [str(self.filepath), *map(str, args)]
         logger.info("Exec: %s", args)
         return sp.Popen(args, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE)
 
