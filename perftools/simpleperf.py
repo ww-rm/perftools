@@ -1,6 +1,7 @@
 
 import os
 import subprocess as sp
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
@@ -11,51 +12,44 @@ from .logger import logger
 StrPath = Union[str, os.PathLike]
 
 
-class RecordProc:
-
-    def __init__(self, proc: sp.Popen[bytes], package_name: str, device_perfdata_path: str) -> None:
-        self.proc = proc
-        self.package_name = package_name
-        self.device_perfdata_path = device_perfdata_path
-        self.stdout: Optional[bytes] = None
-        self.stderr: Optional[bytes] = None
-
-    @property
-    def is_running(self) -> bool:
-        return self.proc.returncode is None
-
-    @property
-    def is_success(self) -> bool:
-        return self.proc.returncode == 0
-
-    def stop(self, timeout: Optional[float] = None) -> bool:
-        if self.proc.returncode is not None:
-            return True
-
-        # TODO: check record post actions
-        self.proc.terminate()
-        self.proc.wait(timeout)
-
-        if self.proc.returncode is not None:
-            self.stdout = self.proc.stdout.read()
-            self.stderr = self.proc.stderr.read()
-
-            if self.stdout:
-                logger.info("record stdout: %s", self.stdout.decode())
-            if self.stderr:
-                logger.error("record stderr: %s", self.stderr.decode())
-
-        return self.proc.returncode is not None
-
-
 class Simpleperf:
     DEVICE_BIN_PATH = "/data/local/tmp/simpleperf"
+    DEVICE_PERFDATA_PATH = "/data/local/tmp/perf.data"
 
     def __init__(self, directory: StrPath, adb: Optional[executable.Adb] = None) -> None:
         self.dir = Path(directory).resolve()
         if adb is None:
             adb = executable.Adb()
         self._adb = adb
+        self._proc: Optional[sp.Popen[bytes]] = None
+        self.stdout: Optional[bytes] = None
+        self.stderr: Optional[bytes] = None
+
+    def is_running(self, serial: str) -> bool:
+        p = self._adb.shell(serial, "pidof", "simpleperf")
+        if p.returncode == 0 and p.stdout:
+            return True
+        return False
+
+    def stop_all(self, serial: str):
+        # SIGINT = 2
+        has_killed = False
+        while self.is_running(serial):
+            if not has_killed:
+                if self._adb.shell(serial, "pkill", "-l", "2", "simpleperf").returncode == 0:
+                    has_killed = True
+            time.sleep(1)
+
+        if self._proc is not None and self._proc.returncode is None:
+            self._proc.wait()
+
+            self.stdout = self._proc.stdout.read()
+            self.stderr = self._proc.stderr.read()
+
+            if self.stdout:
+                logger.info("simpleperf stdout: %s", self.stdout.decode())
+            if self.stderr:
+                logger.error("simpleperf stderr: %s", self.stderr.decode())
 
     def get_binary_path_for_device(self, serial: str) -> Path:
         output = self._adb.shell(serial, "uname", "-m").stdout.decode()
@@ -86,17 +80,16 @@ class Simpleperf:
         if self._adb.shell(serial, "chmod", "a+x", self.DEVICE_BIN_PATH).returncode != 0:
             raise RuntimeError(f"chmod faild on device {serial}")
 
-    def record(self, serial: str, package_name: str, freq: int = 4000, duration: int = 0) -> RecordProc:
-
-        perfdata_filename = f"perf-{datetime.now().strftime('%Y%m%d-%H%M%S')}.data"
-        device_perfdata_path = f"/data/local/tmp/{perfdata_filename}"
+    def begin_record(self, serial: str, package_name: str, freq: int = 4000, duration: int = 0) -> bool:
+        if self.is_running(serial):
+            return False
 
         self.push_to_device(serial)
 
         args = [
             self.DEVICE_BIN_PATH, "record",
             "--app", package_name,
-            "-o", device_perfdata_path,
+            "-o", self.DEVICE_PERFDATA_PATH,
             "-e", "cpu-clock",
             "-f", freq,
             "-g",
@@ -107,6 +100,8 @@ class Simpleperf:
         if duration > 0:
             args += ["--duration", duration]
 
-        proc = self._adb.shell(serial, *args, blocking=False)
+        self._proc = self._adb.shell(serial, *args, blocking=False)
+        return True
 
-        return RecordProc(proc, package_name, device_perfdata_path)
+    def pull_perfdata(self, serial: str, local_perfdata_path: StrPath) -> bool:
+        return self._adb.pull(serial, self.DEVICE_PERFDATA_PATH, local_perfdata_path).returncode == 0
