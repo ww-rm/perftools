@@ -163,4 +163,6 @@ cython_debug/
 
 tmp/
 
-!perftools/bin/**/*
+!mft_simpleperf/bin/**/lib/
+!mft_simpleperf/bin/**/lib64/
+
