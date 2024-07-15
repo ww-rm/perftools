@@ -1,5 +1,6 @@
+"""Apk repakcer, can add debuggable flag to apk"""
+
 import os
-import subprocess as sp
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import Optional, Union
@@ -14,6 +15,8 @@ StrPath = Union[str, os.PathLike]
 
 
 class AndroidManifest:
+    """AndroidManifest"""
+
     FILENAME = "AndroidManifest.xml"
 
     def __init__(self, path: StrPath) -> None:
@@ -40,7 +43,8 @@ class AndroidManifest:
         return path
 
 
-class APKRepacker:
+class ApkRepacker:
+    """Apk Repacker"""
 
     DEFAULT_KS_FILENAME = "repack_default.keystore"
     DEFAULT_KS_PASSWORD = b"123456"
@@ -57,6 +61,8 @@ class APKRepacker:
             raise FileNotFoundError(f"default keystore file {self.DEFAULT_KS_FILENAME} not found in {PACKAGE_DATA_DIR}")
 
     def print_tools(self):
+        """Print tool paths"""
+
         logger.info("Using: %s", self._apktool.filepath)
         logger.info("Using: %s", self._apksigner.filepath)
         logger.info("Using: %s", self._zipalign.filepath)
@@ -74,12 +80,16 @@ class APKRepacker:
         return self._apksigner.sign(apk_path, output_path, self._ks_file, self.DEFAULT_KS_PASSWORD).returncode == 0
 
     def add_debuggable_flag(self, apk_dir: StrPath):
+        """Make apk debuggable."""
+
         manifest_path = Path(apk_dir).joinpath(AndroidManifest.FILENAME)
         manifest = AndroidManifest(manifest_path)
         manifest.enable_debuggable(True)
         manifest.save(manifest_path)
 
     def add_profileable_flag(self, apk_dir: StrPath):
+        """Make apk profileable."""
+
         manifest_path = Path(apk_dir).joinpath(AndroidManifest.FILENAME)
         manifest = AndroidManifest(manifest_path)
         manifest.enable_profileable(True)
@@ -93,11 +103,25 @@ def do_repack(
     enable_profileable: bool = False,
     sdk_dir: Optional[StrPath] = None,
     tmp_dir: StrPath = "tmp"
-) -> bool:
+):
+    """Do repack
+
+    Args:
+        apk_path: Path apk to be repacked.
+        output_path: Output path of repacked apk.
+        enable_debuggable: Whether make apk debuggable.
+        enable_profileable: Whether make apk profileable.
+        sdk_dir: Directory of android sdk to be used, if not specified, search sdk in some possible places.
+        tmp_dir: Directory to save temporary files.
+
+    Raises:
+        RuntimeError: If any step failed.
+    """
+
     tmp = Path(tmp_dir).resolve()
     tmp.mkdir(parents=True, exist_ok=True)
 
-    repacker = APKRepacker(sdk_dir)
+    repacker = ApkRepacker(sdk_dir)
     repacker.print_tools()
 
     # apk paths and dirs
@@ -129,8 +153,8 @@ def do_repack(
 
 def main():
     parser = ArgumentParser()
-    parser.add_argument("-i", "--apk", type=str, help="path of input apk")
-    parser.add_argument("-o", "--output", type=str, help="output path of repacked apk file")
+    parser.add_argument("-i", "--apk", type=str, help="path of input apk", required=True)
+    parser.add_argument("-o", "--output", type=str, default="repacked.apk", help="output path of repacked apk file")
 
     parser.add_argument("--enable-debuggable", action="store_true", help="add debuggable in AndroidManifest.xml")
     parser.add_argument("--enable-profileable", action="store_true", help="add profileable in AndroidManifest.xml")
