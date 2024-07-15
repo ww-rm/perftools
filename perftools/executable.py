@@ -1,8 +1,10 @@
+"""Executable files helper module."""
+
 import os
 import subprocess as sp
-from functools import wraps
 from pathlib import Path
 from typing import List, Optional, Union
+import sys
 
 from . import PACKAGE_BIN_DIR
 from .logger import logger
@@ -11,6 +13,16 @@ StrPath = Union[str, os.PathLike]
 
 
 def search_in_path(filename: str, search_dirs: Optional[List[StrPath]] = None) -> Path:
+    """Search a file in specified directories or system PATH.
+
+    Args:
+        filename: Filename to be searched.
+        search_dirs: Directories to be searched, if not specified, search in system PATH
+
+    Raises:
+        FileNotFoundError: File not found.
+    """
+
     if search_dirs is None:
         search_dirs = os.get_exec_path()
     search_dirs.append(PACKAGE_BIN_DIR)
@@ -24,17 +36,28 @@ def search_in_path(filename: str, search_dirs: Optional[List[StrPath]] = None) -
 
 
 class BaseExecutable:
+    """Executable file commands wrapper.
+
+    Attributes:
+        filename (str): Filename of executable file, maybe different in different platforms.
+    """
+
+    filename: str
 
     def __init__(self, path: Optional[StrPath] = None) -> None:
+        """Executable file.
+
+        Args:
+            path: File path of executable file. If not specified, search it in system PATH
+        """
+
         if path is None:
             path = search_in_path(self.filename)
         self.filepath = Path(path).resolve()
 
-    @property
-    def filename(self) -> str:
-        raise NotImplementedError
+    def _exec_blocking(self, *args, input: Optional[bytes] = None, timeout: Optional[float] = None) -> sp.CompletedProcess[bytes]:
+        """Execute file in blocking mode, return until end or timeout."""
 
-    def _exec_blocking(self, *args, input: Optional[bytes] = None, timeout: Optional[float] = None):
         args = [str(self.filepath), *map(str, args)]
         logger.info("Exec: %s", repr(" ".join(args)))
         p = sp.run(args, input=input, capture_output=True, timeout=timeout)
@@ -47,12 +70,20 @@ class BaseExecutable:
 
         return p
 
-    def _exec_nonblocking(self, *args):
+    def _exec_nonblocking(self, *args) -> sp.Popen[bytes]:
+        """Execute file in non-blocking mode, return right away."""
+
         args = [str(self.filepath), *map(str, args)]
         logger.info("Exec: %s", repr(" ".join(args)))
         return sp.Popen(args, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE)
 
     def exec(self, *args, blocking: bool = True, input: Optional[bytes] = None, timeout: Optional[float] = None):
+        """Execute file with arguments.
+
+        If blocking is True, use input and timeout, and return a CompletedProcess,
+            else omit input and timeout and return a Popen object
+        """
+
         if blocking:
             return self._exec_blocking(*args, input=input, timeout=timeout)
         else:
@@ -61,9 +92,10 @@ class BaseExecutable:
 
 class Adb(BaseExecutable):
 
-    @property
-    def filename(self):
-        return "adb.exe"
+    if sys.platform.startswith("win32"):
+        filename = "adb.exe"
+    else:
+        filename = "adb"
 
     def exec(self, serial: str, *args, blocking: bool = True, input: Optional[bytes] = None, timeout: Optional[float] = None):
         return super().exec("-s", serial, *args, blocking=blocking, input=input, timeout=timeout)
@@ -74,14 +106,16 @@ class Adb(BaseExecutable):
     def pull(self, serial: str, device_path: str, local_path: StrPath) -> sp.CompletedProcess[bytes]:
         return self.exec(serial, "pull", device_path, local_path)
 
-    def shell(self, serial: str, *args, blocking: bool = True, input: Optional[bytes] = None, timeout: Optional[float] = None):
+    def shell(self, serial: str, *args, blocking: bool = True, input: Optional[bytes] = None,  timeout: Optional[float] = None):
         return self.exec(serial, "shell", *args, blocking=blocking, input=input, timeout=timeout)
 
 
 class ZipAlign(BaseExecutable):
-    @property
-    def filename(self):
-        return "zipalign.exe"
+
+    if sys.platform.startswith("win32"):
+        filename = "zipalign.exe"
+    else:
+        filename = "zipalign"
 
     def align(self, apk_path: StrPath, output_path: StrPath) -> sp.CompletedProcess[bytes]:
         # MUST use absolute path
@@ -91,26 +125,33 @@ class ZipAlign(BaseExecutable):
 
 
 class Java(BaseExecutable):
-    @property
-    def filename(self):
-        return "java.exe"
+
+    if sys.platform.startswith("win32"):
+        filename = "java.exe"
+    else:
+        filename = "java"
 
 
 class BaseJar:
+    """Executable jar file commands wrapper."""
 
     def __init__(self, path: StrPath, java_path: Optional[StrPath] = None) -> None:
-        self._path = Path(path).resolve()
+        """BaseJar.
+
+        Args:
+            path: Jar path.
+            java_path: Java executable file path, if not specified, search it in system PATH.
+        """
+
+        self.filepath = Path(path).resolve()
         self._java = Java(java_path)
 
-    @property
-    def filepath(self) -> Path:
-        return self._path
-
     def exec(self, *args, blocking: bool = True, input: Optional[bytes] = None, timeout: Optional[float] = None):
-        return self._java.exec("-jar", self._path, *args, blocking=blocking, input=input, timeout=timeout)
+        return self._java.exec("-jar", self.filepath, *args, blocking=blocking, input=input, timeout=timeout)
 
 
 class ApkTool(BaseJar):
+
     def pack(self, apk_dir: StrPath, output_path: StrPath) -> sp.CompletedProcess[bytes]:
         return self.exec("-f", "b", apk_dir, "-o", output_path)
 
@@ -126,4 +167,5 @@ class ApkSigner(BaseJar):
         ks_file: StrPath,
         ks_pwd: bytes
     ) -> sp.CompletedProcess[bytes]:
-        return self.exec("sign", "--ks", ks_file, "--out", output_path, apk_path, input=ks_pwd)
+        # MUST exist a "\n"
+        return self.exec("sign", "--ks", ks_file, "--out", output_path, apk_path, input=ks_pwd + b"\n")
