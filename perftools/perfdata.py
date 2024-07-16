@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 import simpleperf_report_lib as reportlib
 
@@ -150,7 +150,7 @@ class AggregatedThread:
         self.tid = tid
         self.unique_name = f"{name}-{tid}"
 
-        self.call_nodes: List[AggregatedCallNode] = []
+        self.call_nodes: Dict[str, AggregatedCallNode] = {}  # symbol_name -> node
 
     def _create_callnode(self, sample_info: SampleInfo) -> AggregatedCallNode:
         top_node = AggregatedCallNode(sample_info.symbol, sample_info.start_time, sample_info.end_time)
