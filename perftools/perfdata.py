@@ -13,37 +13,14 @@ class Sample:
     def __init__(self, sample: reportlib.SampleStruct) -> None:
         self._sample = sample
 
-    @property
-    def ip(self) -> int:
-        return self._sample.ip
-
-    @property
-    def pid(self) -> int:
-        return self._sample.pid
-
-    @property
-    def tid(self) -> int:
-        return self._sample.tid
-
-    @property
-    def thread_name(self) -> str:
-        return self._sample.thread_comm
-
-    @property
-    def time(self) -> int:
-        return self._sample.time
-
-    @property
-    def in_kernel(self) -> bool:
-        return self._sample.in_kernel
-
-    @property
-    def cpu(self) -> int:
-        return self._sample.cpu
-
-    @property
-    def period(self) -> int:
-        return self._sample.period
+        self.ip: int = self._sample.ip
+        self.pid: int = self._sample.pid
+        self.tid: int = self._sample.tid
+        self.thread_name: str = self._sample.thread_comm
+        self.time: int = self._sample.time
+        self.in_kernel: bool = self._sample.in_kernel
+        self.cpu: int = self._sample.cpu
+        self.period: int = self._sample.period
 
     def json(self) -> dict:
         return {
@@ -62,9 +39,7 @@ class Event:
     def __init__(self, event: reportlib.EventStruct) -> None:
         self._event = event
 
-    @property
-    def name(self) -> str:
-        return self._event.name
+        self.name: str = self._event.name
 
     def json(self) -> dict:
         return {
@@ -76,25 +51,11 @@ class Symbol:
     def __init__(self, symbol: reportlib.SymbolStruct) -> None:
         self._symbol = symbol
 
-    @property
-    def dso_name(self) -> str:
-        return self._symbol.dso_name
-
-    @property
-    def vaddr_in_file(self) -> int:
-        return self._symbol.vaddr_in_file
-
-    @property
-    def symbol_name(self) -> str:
-        return self._symbol.symbol_name
-
-    @property
-    def symbol_addr(self) -> int:
-        return self._symbol.symbol_addr
-
-    @property
-    def symbol_len(self) -> int:
-        return self._symbol.symbol_len
+        self.dso_name: str = self._symbol.dso_name
+        self.vaddr_in_file: int = self._symbol.vaddr_in_file
+        self.symbol_name: str = self._symbol.symbol_name
+        self.symbol_addr: int = self._symbol.symbol_addr
+        self.symbol_len: int = self._symbol.symbol_len
 
     def json(self) -> dict:
         return {
@@ -110,15 +71,8 @@ class CallChainEntry:
     def __init__(self, call_chain_entry: reportlib.CallChainEntryStructure) -> None:
         self._call_chain_entry = call_chain_entry
 
-        self._symbol = Symbol(self._call_chain_entry.symbol)
-
-    @property
-    def ip(self) -> int:
-        return self._call_chain_entry.ip
-
-    @property
-    def symbol(self) -> Symbol:
-        return self._symbol
+        self.ip: int = self._call_chain_entry.ip
+        self.symbol = Symbol(self._call_chain_entry.symbol)
 
     def json(self) -> dict:
         return {
@@ -131,18 +85,11 @@ class CallChain:
     def __init__(self, call_chain: reportlib.CallChainStructure) -> None:
         self._call_chain = call_chain
 
-        self._entries = [CallChainEntry(self._call_chain.entries[i]) for i in range(self._call_chain.nr)]
+        self.num_entries: int = self._call_chain.nr
+        self.entries = [CallChainEntry(self._call_chain.entries[i]) for i in range(self._call_chain.nr)]
 
     def __len__(self) -> int:
         return self.num_entries
-
-    @property
-    def num_entries(self) -> int:
-        return self._call_chain.nr
-
-    @property
-    def entries(self) -> List[CallChainEntry]:
-        return self._entries
 
     def json(self) -> dict:
         return {
@@ -163,6 +110,17 @@ class SampleInfo:
         self.event = Event(event)
         self.symbol = Symbol(symbol)
         self.call_chain = CallChain(call_chain)
+
+        self.start_time = self.sample.time - self.sample.period
+        self.end_time = self.sample.time
+
+    def __str__(self) -> str:
+        values = ", ".join([
+            f"thread={self.sample.thread_name}-{self.sample.tid}",
+            f"symbol={self.symbol.symbol_name}",
+            f"period=({self.start_time},{self.end_time})"
+        ])
+        return f"SampleInfo({values})"
 
     def json(self) -> dict:
         return {
@@ -195,23 +153,26 @@ class AggregatedThread:
         self.call_nodes: List[AggregatedCallNode] = []
 
     def _create_callnode(self, sample_info: SampleInfo) -> AggregatedCallNode:
-        start_time = sample_info.sample.time - sample_info.sample.period
-        end_time = sample_info.sample.time
-
-        top_node = AggregatedCallNode(sample_info.symbol, start_time, end_time)
+        top_node = AggregatedCallNode(sample_info.symbol, sample_info.start_time, sample_info.end_time)
 
         for entry in sample_info.call_chain.entries:
-            node = AggregatedCallNode(entry.symbol, start_time, end_time)
+            node = AggregatedCallNode(entry.symbol, sample_info.start_time, sample_info.end_time)
             node.nodes.append(top_node)
             top_node = node
 
         return top_node
 
+    def _aggregate_callnode(self, sample_info: SampleInfo) -> AggregatedCallNode:
+        ...
+
     def append_sample(self, sample_info: SampleInfo):
         if len(self.call_nodes) <= 0:
             self.call_nodes.append(self._create_callnode(sample_info))
         else:
-            ...
+            last_node = self.call_nodes[-1]
+            if sample_info.end_time <= last_node.end_time:
+                logger.warning("skip sample %s", sample_info)
+                return
 
 
 class Perfdata:
