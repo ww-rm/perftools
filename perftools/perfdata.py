@@ -173,9 +173,40 @@ class SampleInfo:
         }
 
 
+class StackFrameNode:
+    def __init__(self, symbol: Symbol, begin_time: int, end_time: int) -> None:
+        self.symbol = symbol
+        self.begin_time = begin_time
+        self.end_time = end_time
+
+        self.sub_frame = []
+
+
 class Thread:
     def __init__(self, name: str, tid: int) -> None:
-        pass
+        self.thread_name = name
+        self.tid = tid
+        self.unique_name = f"{name}-{tid}"
+
+        self.stack_frames = []
+
+    def _create_stack_frame(self, sample_info: SampleInfo) -> StackFrameNode:
+        start_time = sample_info.sample.time - sample_info.sample.period
+        end_time = sample_info.sample.time
+
+        top_node = StackFrameNode(sample_info.symbol, start_time, end_time)
+
+        node = top_node
+        for entry in reversed(sample_info.call_chain.entries):
+            node.sub_frame.append(StackFrameNode(entry.symbol, start_time, end_time))
+
+        return top_node
+
+    def append_sample(self, sample_info: SampleInfo):
+        if len(self.stack_frames) <= 0:
+            self.stack_frames.append(self._create_stack_frame(sample_info))
+        else:
+            ...
 
 
 class Perfdata:
