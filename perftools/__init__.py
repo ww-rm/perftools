@@ -1,3 +1,4 @@
+import sys as _sys
 from pathlib import Path
 
 PACKAGE_DATA_DIR = Path(__file__).parent.joinpath("data")
