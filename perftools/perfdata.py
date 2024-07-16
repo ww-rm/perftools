@@ -137,7 +137,7 @@ class AggregatedCallNode:
         self.begin_time = begin_time
         self.end_time = end_time
 
-        self.nodes: List[AggregatedCallNode] = []
+        self.nodes: Dict[str, AggregatedCallNode] = {}  # symbol_name -> node
 
     @property
     def duration(self) -> int:
