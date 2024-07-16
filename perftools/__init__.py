@@ -6,8 +6,6 @@ PACKAGE_BIN_DIR = Path(__file__).parent.joinpath("bin")
 __version__ = "0.1.0"
 
 from .androidsdk import Sdk as _Sdk  # noqa: E402
-from .apkrepacker import ApkRepacker, do_repack  # noqa: E402
-from .simpleperf import Simpleperf  # noqa: E402
 
 # add simpleperf module path to sys.path
 _simpleperf_dir = _Sdk().get_latest_ndk().simpleperf
