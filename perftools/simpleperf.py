@@ -141,7 +141,8 @@ class Simpleperf:
             "-f", freq,
             "-g",
             "--trace-offcpu",
-            "--post-unwind=yes"
+            "--post-unwind=yes",
+            "--no-cut-samples",
         ]
 
         if duration > 0:
