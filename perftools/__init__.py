@@ -4,7 +4,7 @@ from pathlib import Path
 PACKAGE_DATA_DIR = Path(__file__).parent.joinpath("data")
 PACKAGE_BIN_DIR = Path(__file__).parent.joinpath("bin")
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .androidsdk import Sdk as _Sdk  # noqa: E402
 
