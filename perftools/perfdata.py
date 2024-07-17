@@ -421,8 +421,10 @@ class Perfdata:
         if "on-off-cpu" in supported_modes:
             lib.SetTraceOffCpuMode("on-off-cpu")  # on-off-cpu  mixed-on-off-cpu
 
+        count = 0
         while True:
             sample = lib.GetNextSample()
+            count += 1
 
             if sample is None:
                 lib.Close()
@@ -436,6 +438,9 @@ class Perfdata:
             )
             if sample_info.call_chain.num_entries >= self.min_stack_count:
                 yield sample_info
+
+            if count % 50000 == 0:
+                logger.debug("%d samples iterated.", count)
 
     def get_threads(self) -> Dict[str, List[Thread]]:
         """Get threads from record file.
