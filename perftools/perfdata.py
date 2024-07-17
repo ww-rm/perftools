@@ -282,11 +282,11 @@ class Thread:
             symbols.append(s.symbol)
         symbols.reverse()
 
-        start_time = sample_info.sample.time - 1
-        end_time = start_time
+        end_time = sample_info.sample.time
+        start_time = (end_time - 1) if self.end_time < 0 else self.end_time
 
         if end_time < self.end_time:
-            logger.warning("%s skipped")
+            logger.warning("%s skipped", sample_info)
             return
 
         # a newly created thread
@@ -324,7 +324,9 @@ class Thread:
 
             # a new sub call to current father frame
             else:
-                sub_stack_frame = self._create_stack_frame(symbols[i:], current_stack_frame.end_time, end_time)
+                sub_stack_frame = self._create_stack_frame(symbols[i:],
+                                                           current_stack_frame.end_time,  # maybe we can use top_end_time or start_time?
+                                                           end_time)
                 father_frame = current_stack_frame.father_frame
 
                 # a new root frame
@@ -338,35 +340,28 @@ class Thread:
 
                 return
 
-    def _aggregate_all(self, child_frames: List[StackFrame], agg_father_frame: Optional[AggregatedStackFrame] = None) -> Dict[str, AggregatedStackFrame]:
-        """Generate AggregatedStackFrame recursively.
+    def _aggregate_all(self, root: Optional[AggregatedStackFrame], child_frames: List[StackFrame]):
+        """Generate AggregatedStackFrame recursively. Modify root inplace."""
 
-        Returns:
-            agg_stack_frames: A dict maps stack frame name to corresponding AggregatedStackFrame.
-        """
+        agg_child_frames = root.child_frames
 
-        result: Dict[str, AggregatedStackFrame] = {}
         for frame in child_frames:
-            if frame.symbol_name not in result:
-                result[frame.symbol_name] = AggregatedStackFrame(frame, agg_father_frame)
+            if frame.symbol_name not in agg_child_frames:
+                agg_child_frames[frame.symbol_name] = AggregatedStackFrame(frame, root)
             else:
-                result[frame.symbol_name].raw_stack_frames.append(frame)
+                agg_child_frames[frame.symbol_name].raw_stack_frames.append(frame)
 
-        for agg_frame in result.values():
+        for agg_frame in agg_child_frames.values():
             child_frames = []
             for raw_frame in agg_frame.raw_stack_frames:
                 child_frames.extend(raw_frame.child_frames)
-            agg_frame.child_frames = self._aggregate_all(child_frames, agg_frame)
-
-        agg_father_frame.child_frames = result
-
-        return result
+            self._aggregate_all(agg_frame, child_frames)
 
     def aggregate(self) -> AggregatedStackFrame:
         """Aggregate all stack frames to a root AggregatedStackFrame, the thread will be seen as a function call."""
 
         root = AggregatedStackFrame(StackFrame(self.unique_name, self.start_time, self.end_time))
-        self._aggregate_all(self.stack_frames, root)
+        self._aggregate_all(root, self.stack_frames)
         return root
 
     def json(self) -> dict:
