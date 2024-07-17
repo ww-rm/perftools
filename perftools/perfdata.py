@@ -357,10 +357,15 @@ class Thread:
                 child_frames.extend(raw_frame.child_frames)
             self._aggregate_all(agg_frame, child_frames)
 
-    def aggregate(self) -> AggregatedStackFrame:
-        """Aggregate all stack frames to a root AggregatedStackFrame, the thread will be seen as a function call."""
+    def aggregate(self, use_unique_thread_name: bool = False) -> AggregatedStackFrame:
+        """Aggregate all stack frames to a root AggregatedStackFrame, the thread will be seen as a function call.
 
-        root = AggregatedStackFrame(StackFrame(self.unique_name, self.start_time, self.end_time))
+        Args:
+            use_unique_thread_name: If true, set root thread name with thread id, else only thread name.
+        """
+
+        tname = self.unique_name if use_unique_thread_name else self.thread_name
+        root = AggregatedStackFrame(StackFrame(tname, self.start_time, self.end_time))
         self._aggregate_all(root, self.stack_frames)
         return root
 
