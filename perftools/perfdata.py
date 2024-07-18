@@ -243,6 +243,8 @@ class Thread:
         # self.samples = []  # maybe can store samples
         self.samples_count = 0
 
+        self.__tmp_node_count = 0
+
     @property
     def start_time(self) -> int:
         """Returns start time of first top frame, returns -1 if no frames."""
@@ -351,6 +353,10 @@ class Thread:
             else:
                 agg_child_frames[frame.symbol_name].raw_stack_frames.append(frame)
 
+        self.__tmp_node_count += 1
+        if self.__tmp_node_count % 10000 == 0:
+            logger.debug("%d nodes processed.", self.__tmp_node_count)
+
         for agg_frame in agg_child_frames.values():
             child_frames = []
             for raw_frame in agg_frame.raw_stack_frames:
@@ -364,6 +370,7 @@ class Thread:
             use_unique_thread_name: If true, set root thread name with thread id, else only thread name.
         """
 
+        self.__tmp_node_count = 0
         tname = self.unique_name if use_unique_thread_name else self.thread_name
         root = AggregatedStackFrame(StackFrame(tname, self.start_time, self.end_time))
         self._aggregate_all(root, self.stack_frames)
