@@ -456,7 +456,7 @@ class Perfdata:
             threads: A dict maps thread_name to thread.
                 There may be threads have the same thread_name, but different unique_name.
                 Each list is sorted by thread samples count in descending order.
-            """
+        """
 
         threads: Dict[str, Thread] = {}
         for sample_info in self.iter_samples():
