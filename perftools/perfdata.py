@@ -446,7 +446,7 @@ class Perfdata:
             if sample_info.call_chain.num_entries >= self.min_stack_count:
                 yield sample_info
 
-            if count % 50000 == 0:
+            if count % 100000 == 0:
                 logger.debug("%d samples iterated.", count)
 
     def get_threads(self) -> Dict[str, List[Thread]]:
