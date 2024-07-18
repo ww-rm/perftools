@@ -193,30 +193,6 @@ class AggregatedStackFrame:
     def avg_duration(self) -> float:
         return self.duration / self.call_count
 
-    def get_frame_metrics(self, frame_timestamps: Optional[List[Tuple[int, int]]] = None) -> dict:
-        """Get game frame related metrics.
-
-        Returns:
-            {
-                "avg_call_count": total call count / total frames count,
-                "max_duration": maximum duration in one frame,
-                "max_call_count": maximum call count in one frame,
-                "global_avg_duration": total duration / total frames count
-            }
-
-            If frame_timestamps not given, return -1 for all values.
-        """
-
-        if frame_timestamps is None:
-            return {
-                "avg_call_count": -1,
-                "max_duration": -1,
-                "max_call_count": -1,
-                "global_avg_duration": -1
-            }
-        else:
-            raise NotImplementedError
-
     def json(self) -> dict:
         if len(self.child_frames) <= 0:
             return None
