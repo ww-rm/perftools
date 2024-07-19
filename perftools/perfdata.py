@@ -1,6 +1,7 @@
 """perf.data parser module."""
 
 import os
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -220,6 +221,7 @@ class Thread:
         self.samples_count = 0
 
         self.__tmp_node_count = 0
+        self.__tmp_last_time = 0
 
     @property
     def start_time(self) -> int:
@@ -330,7 +332,9 @@ class Thread:
                 agg_child_frames[frame.symbol_name].raw_stack_frames.append(frame)
 
         self.__tmp_node_count += 1
-        if self.__tmp_node_count % 10000 == 0:
+        __tmp_now_time = time.time()
+        if __tmp_now_time - self.__tmp_last_time > 10:
+            self.__tmp_last_time = __tmp_now_time
             logger.debug("%d nodes processed.", self.__tmp_node_count)
 
         for agg_frame in agg_child_frames.values():
@@ -347,6 +351,7 @@ class Thread:
         """
 
         self.__tmp_node_count = 0
+        self.__tmp_last_time = time.time()
         tname = self.unique_name if use_unique_thread_name else self.thread_name
         root = AggregatedStackFrame(StackFrame(tname, self.start_time, self.end_time))
         self._aggregate_all(root, self.stack_frames)
@@ -405,9 +410,9 @@ class Perfdata:
             lib.SetTraceOffCpuMode("on-off-cpu")  # on-off-cpu  mixed-on-off-cpu
 
         count = 0
+        last_time = time.time()
         while True:
             sample = lib.GetNextSample()
-            count += 1
 
             if sample is None:
                 lib.Close()
@@ -422,8 +427,13 @@ class Perfdata:
             if sample_info.call_chain.num_entries >= self.min_stack_count:
                 yield sample_info
 
-            if count % 100000 == 0:
+            count += 1
+            now_time = time.time()
+            if now_time - last_time > 10:
+                last_time = now_time
                 logger.debug("%d samples iterated.", count)
+        
+        logger.debug("All %d samples iterate done.", count)
 
     def get_threads(self) -> Dict[str, List[Thread]]:
         """Get threads from record file.
