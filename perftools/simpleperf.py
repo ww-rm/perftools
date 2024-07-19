@@ -133,6 +133,8 @@ class Simpleperf:
 
         self.push_to_device(serial)
 
+        self._adb.shell(serial, "rm", "-f", self.DEVICE_PERFDATA_PATH)
+
         args = [
             self.DEVICE_BIN_PATH, "record",
             "--app", package_name,
