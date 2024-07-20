@@ -605,14 +605,18 @@ class Thread(FrameContainerBase):
 
         self._next_need_new_frame = False
 
-    def aggregate_frames(self) -> List[Dict[str, AggregatedStackFrame]]:
-        """Aggregate all stack frames to a root AggregatedStackFrame, the thread will be seen as a function call.
-
-        Args:
-            use_unique_thread_name: If true, set root thread name with thread id, else only thread name.
+    def aggregate_frames(self) -> List[AggregatedStackFrame]:
+        """Aggregate all stack frames to a root AggregatedStackFrame,
+            the thread will be seen as a function call.
         """
 
-        return [v.aggregate() for v in self.frames]
+        agg_frames = []
+        for frame in self.frames:
+            agg_frame = AggregatedStackFrame(StackFrame(self.thread_name, frame.start_time, frame.end_time))
+            agg_frame.child_frames.update(frame.aggregate())
+            agg_frames.append(agg_frame)
+
+        return agg_frames
 
 
 class Perfdata:
@@ -625,8 +629,8 @@ class Perfdata:
             for line in f:
                 timestamps.append(int(line.strip().split()[0]) * 1000)  # convert to nanosecond
 
-        if len(timestamps) <= 2:
-            return ValueError(f"Length of frame_timestamps must greater than 2, given {timestamps}")
+        if len(timestamps) <= 10:
+            return ValueError(f"Too few frame_timestamps, given {len(timestamps)}")
         return timestamps
 
     def __init__(
