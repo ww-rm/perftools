@@ -143,7 +143,7 @@ class Simpleperf:
             "-f", freq,
             "-g",
             "--trace-offcpu",
-            "--post-unwind=yes",
+            "--post-unwind=no",
             "--no-cut-samples",
         ]
 

@@ -1,14 +1,13 @@
 """perf.data parser module."""
 
+import gc
 import os
 import time
-from argparse import ArgumentParser
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 import simpleperf_report_lib as reportlib
 
-from . import stats_pb2
 from .logger import logger
 
 StrPath = Union[str, os.PathLike]
@@ -24,10 +23,6 @@ class Sample:
         self.in_kernel: bool = sample.in_kernel
         self.cpu: int = sample.cpu
         self.period: int = sample.period
-
-    @property
-    def time_us(self) -> float:
-        return self.time / 1000
 
     def json(self) -> dict:
         return {
@@ -113,7 +108,7 @@ class SampleInfo:
         self.symbol = Symbol(symbol)
         self.call_chain = CallChain(call_chain)
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         values = ", ".join([
             f"thread={self.sample.thread_name}-{self.sample.tid}",
             f"symbol={self.symbol.symbol_name}",
@@ -131,22 +126,28 @@ class SampleInfo:
         }
 
 
-class StackFrame:
-    """Stack frame used in threads.
-
-    Each stack frame is a Bidirectional Multi-way Tree.
-        Use father_frame to get father node, and child_frames to get children nodes.
+class FrameBase:
+    """Frame base class.
+        Include left point and exclude right point, 
+        which means the same behavior as range, [start_time, end_time)
 
     The unit of time is nanosecond (ns, 10^-9 second)
     """
 
-    def __init__(self, symbol_name: str, start_time: int, end_time: int, father_frame: Optional["StackFrame"] = None) -> None:
-        self.symbol_name = symbol_name
-        self.start_time = start_time
-        self.end_time = end_time
-        self.father_frame = father_frame
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__()
 
-        self.child_frames: List[StackFrame] = []
+    @property
+    def start_time(self) -> int:
+        raise NotImplementedError
+
+    @property
+    def end_time(self) -> int:
+        raise NotImplementedError
+
+    @property
+    def duration(self) -> int:
+        return self.end_time - self.start_time
 
     @property
     def start_time_us(self) -> float:
@@ -157,23 +158,168 @@ class StackFrame:
         return self.end_time / 1000
 
     @property
-    def duration(self) -> int:
-        return self.end_time - self.start_time
-
-    @property
     def duration_us(self) -> float:
         return self.duration / 1000
 
-    def json(self) -> dict:
-        if len(self.child_frames) <= 0:
-            return None
+    @property
+    def start_time_ms(self) -> float:
+        return self.start_time_us / 1000
 
-        k = f"{self.symbol_name}[{self.start_time / 1_000_000:.3f},{self.end_time / 1_000_000:.3f}]"
-        v = [c.json() for c in self.child_frames]
+    @property
+    def end_time_ms(self) -> float:
+        return self.end_time_us / 1000
+
+    @property
+    def duration_ms(self) -> float:
+        return self.duration_us / 1000
+
+
+class StackFrame(FrameBase):
+    """Stack frame used in threads.
+
+    Each stack frame is a Bidirectional Multi-way Tree.
+        Use father_frame to get father node, and child_frames to get children nodes.
+
+    ```plain
+    +----------------------------------------------+
+    |         Father Frame (Optional)              |
+    +--+-----------------------------------------+-+
+       |                Frame (self)             |
+       +---------------+------------+------------+
+       |    Sub Frame  |            | Sub Frame  |
+       +--------+------+            +------------+
+       ^        | Sub  |                         ^
+       ^        +------+                         ^
+       ^                                         ^
+    start_time                                end_time
+    ```
+    """
+
+    @staticmethod
+    def create(symbols: List[Symbol], start_time: int, end_time: int, father_frame: Optional["StackFrame"] = None):
+        """Create stack frames with symbols and times.
+
+        ```plain
+             +----------------+
+             |  Father Frame  |
+             +----------------+
+             |  Frame (self)  |
+             +----------------+
+             |    Sub Frame   |
+             +----------------+
+             |       ...      |
+             +----------------+
+             |    Sub Frame   |
+             +----------------+
+             ^                ^
+        start_time         end_time
+        ```
+        """
+
+        if len(symbols) <= 0:
+            raise ValueError("Empty symbols")
+
+        top_node = StackFrame(symbols[0].symbol_name, start_time, end_time, father_frame)
+
+        node = top_node
+        for symbol in symbols[1:]:
+            sub_node = StackFrame(symbol.symbol_name, start_time, end_time, node)
+            node.child_frames.append(sub_node)
+            node = sub_node
+
+        return top_node
+
+    def __init__(self, symbol_name: str, start_time: int, end_time: int, father_frame: Optional["StackFrame"] = None) -> None:
+        super().__init__()
+
+        self.symbol_name = symbol_name
+        self._start_time = start_time
+        self._end_time = end_time
+        self.father_frame = father_frame
+
+        self.child_frames: List[StackFrame] = []
+
+    @property
+    def start_time(self) -> int:
+        return self._start_time
+
+    @start_time.setter
+    def start_time(self, value: int):
+        self._start_time = value
+
+    @property
+    def end_time(self) -> int:
+        return self._end_time
+
+    @end_time.setter
+    def end_time(self, value: int):
+        self._end_time = value
+
+    def extend(self, symbols: List[Symbol], sample_time: int):
+        """Extend the frame tail with given symbols, will try to merge from top to bottom if possible.
+
+        S1 calls S2 calls S3 ... calls Sn
+        """
+
+        if len(symbols) <= 0:
+            return
+
+        if sample_time <= self.end_time:
+            return
+
+        if self.symbol_name != symbols[0].symbol_name:
+            raise ValueError("Can't extend to different top node.")
+
+        top_end_time = self.end_time
+        current_stack_frame = self
+        for i, symbol in enumerate(symbols):
+            # if has same symbol name, try to merge it
+            # for sub frames, current_stack_frame.end_time may less than top_end_time
+            # which means that the two have the same father frame, but there is a gap between themselves.
+            # currently, we consider them as different calls, even they have the same symbols
+            if (
+                current_stack_frame.symbol_name == symbol.symbol_name
+                and current_stack_frame.end_time == top_end_time
+            ):
+                # the same symbols and calls, we extend the time
+                current_stack_frame.end_time = sample_time
+
+                # continue to compare sub stack frames
+                if len(current_stack_frame.child_frames) > 0:
+                    current_stack_frame = current_stack_frame.child_frames[-1]
+
+                # current stack frames count less than the sample
+                # make the rest symbols a sub frame to current stack frame
+                elif i + 1 <= len(symbols) - 1:
+                    sub_stack_frame = self.create(symbols[i+1:], top_end_time, sample_time, current_stack_frame)
+                    current_stack_frame.child_frames.append(sub_stack_frame)
+                    return
+
+            # a new sub frame to current father frame
+            else:
+                father_frame = current_stack_frame.father_frame
+                assert father_frame is not None
+
+                sub_stack_frame = self.create(symbols[i:],
+                                              current_stack_frame.end_time,  # maybe we can use top_end_time ?
+                                              sample_time,
+                                              father_frame)
+
+                father_frame.child_frames.append(sub_stack_frame)
+
+                return
+
+    def json(self) -> dict:
+        k = f"{self.symbol_name}[{self.start_time_ms:.3f},{self.end_time_ms:.3f}]"
+
+        if len(self.child_frames) <= 0:
+            v = None
+        else:
+            v = [c.json() for c in self.child_frames]
         return {k: v}
 
 
-class AggregatedStackFrame:
+class AggregatedStackFrame(FrameBase):
     """Aggregated stack frame for threads.
 
     Each stack frame is a Bidirectional Multi-way Tree.
@@ -184,39 +330,55 @@ class AggregatedStackFrame:
     The unit of time is nanosecond (ns, 10^-9 second)
     """
 
+    @staticmethod
+    def _aggregate_child_frames(root: "AggregatedStackFrame"):
+        child_frames = [child for frame in root.raw_stack_frames for child in frame.child_frames]
+
+        for frame in child_frames:
+            if frame.symbol_name not in root.child_frames:
+                root.child_frames[frame.symbol_name] = AggregatedStackFrame(frame, root)
+            else:
+                root.child_frames[frame.symbol_name].raw_stack_frames.append(frame)
+
+        for agg_frame in root.child_frames.values():
+            AggregatedStackFrame._aggregate_child_frames(agg_frame)
+
+    @staticmethod
+    def create(stack_frames: List[StackFrame]) -> Dict[str, "AggregatedStackFrame"]:
+        """Create AggregatedStackFrame from some root stack frames."""
+
+        result: Dict[str, "AggregatedStackFrame"] = {}
+
+        for frame in stack_frames:
+            if frame.symbol_name not in result:
+                result[frame.symbol_name] = AggregatedStackFrame(frame)  # unique root node
+            else:
+                result[frame.symbol_name].raw_stack_frames.append(frame)
+
+        for agg_frame in result.values():
+            AggregatedStackFrame._aggregate_child_frames(agg_frame)
+
+        return result
+
     def __init__(self, stack_frame: StackFrame, father_frame: Optional["AggregatedStackFrame"] = None) -> None:
+        """Do not use it directly, use static method create instead."""
+
         self.symbol_name = stack_frame.symbol_name
         self.raw_stack_frames: List[StackFrame] = [stack_frame]
         self.father_frame = father_frame
         self.child_frames: Dict[str, AggregatedStackFrame] = {}
 
     @property
-    def min_time(self) -> int:
+    def start_time(self) -> int:
         return self.raw_stack_frames[0].start_time
 
     @property
-    def max_time(self) -> int:
+    def end_time(self) -> int:
         return self.raw_stack_frames[-1].end_time
 
     @property
-    def min_time_us(self) -> float:
-        return self.min_time / 1000
-
-    @property
-    def max_time_us(self) -> float:
-        return self.max_time / 1000
-
-    @property
     def duration(self) -> int:
-        return sum(sf.duration for sf in self.raw_stack_frames)
-
-    @property
-    def duration_us(self) -> float:
-        return self.duration / 1000
-
-    @property
-    def duration_ms(self) -> float:
-        return self.duration_us / 1000
+        return sum(v.duration for v in self.raw_stack_frames)
 
     @property
     def call_count(self) -> int:
@@ -230,72 +392,195 @@ class AggregatedStackFrame:
     def avg_duration_us(self) -> float:
         return self.avg_duration / 1000
 
-    def json(self) -> dict:
-        if len(self.child_frames) <= 0:
-            return None
+    @property
+    def avg_duration_ms(self) -> float:
+        return self.avg_duration_us / 1000
 
-        k = f"{self.symbol_name}[{self.duration / 1_000_000:.3f},{self.call_count}]"
-        v = [c.json() for c in sorted(self.child_frames.values(), key=lambda x: x.avg_duration, reverse=True)]
+    def json(self) -> dict:
+        k = f"{self.symbol_name}[{self.duration_ms:.3f},{self.call_count}]"
+
+        if len(self.child_frames) <= 0:
+            v = None
+        else:
+            v = [c.json() for c in sorted(self.child_frames.values(), key=lambda x: x.avg_duration, reverse=True)]
         return {k: v}
 
 
-class Timeline:
-    """A container for stack frames (funtion calls)."""
+class FrameContainerBase(FrameBase):
+    """Frame container base"""
 
-    def __init__(self) -> None:
-        self.stack_frames: List[StackFrame] = []
-        # self.samples = []  # maybe can store samples
-        self.samples_count = 0
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__()
+        self.frames: List[FrameBase] = []
+
+    @property
+    def is_empty(self) -> bool:
+        return len(self.frames) <= 0
 
     @property
     def start_time(self) -> int:
         """Returns start time of first top frame, returns -1 if no frames."""
 
-        if len(self.stack_frames) <= 0:
+        if len(self.frames) <= 0:
             return -1
-        return self.stack_frames[0].start_time
+        return self.frames[0].start_time
 
     @property
     def end_time(self) -> int:
         """Returns end time of last top frame, returns -1 if no frames."""
 
-        if len(self.stack_frames) <= 0:
+        if len(self.frames) <= 0:
             return -1
-        return self.stack_frames[-1].end_time
+        return self.frames[-1].end_time
 
-    @property
-    def start_time_us(self) -> float:
-        return self.start_time / 1000
 
-    @property
-    def end_time_us(self) -> float:
-        return self.end_time / 1000
+class TimeFrame(FrameContainerBase):
+    """A time based container for stack frames (funtion calls).
 
-    @property
-    def duration(self) -> int:
-        return self.end_time - self.start_time
+    A time frame consists of continous stack frames, and each stack frames was created by many samples.
 
-    @property
-    def duration_us(self) -> float:
-        return self.duration / 1000
+    ```plain
+    +----------------------------------------------+
+    |                 Time Frame                   |
+    +-------------+------------------+-------------+
+    | Stack Frame |   Stack Frame    | Stack Frame |
+    +^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^+
+    |                   Samples                    |
+    +----------------------------------------------+
+    ```
+    """
 
-    def _create_stack_frame(self, symbols: List[Symbol], start_time: int, end_time: int) -> StackFrame:
-        """Create a new stack frame from symbols, the symbols do calls from first to last."""
+    def __init__(self) -> None:
+        super().__init__()
+        self.frames: List[StackFrame]
 
-        top_node = StackFrame(symbols[0].symbol_name, start_time, end_time)
+    def extend(self, end_time: int):
+        """Extend the last call stack to end_time.
 
-        node = top_node
-        for symbol in symbols[1:]:
-            sub_node = StackFrame(symbol.symbol_name, start_time, end_time, node)
-            node.child_frames.append(sub_node)
-            node = sub_node
+        ```plain
+        +------------------------------+~~~~~~~~~~+
+        |          Frame               ~          |
+        +------------------------------+~~~~~~~~~~+
+        |         Sub Frame            ~          |
+        +---------------+--------------+~~~~~~~~~~+
+        |    Sub Frame  |    | Sub |   ^          ^
+        +--------+------+    +-----+   ^          ^
+        ^        | Sub  |              ^          ^
+        ^        +------+              ^          ^
+        ^                              ^          ^
+        start_time                end_time' -> end_time
+        ```
+        """
 
-        return top_node
+        if len(self.frames) <= 0:
+            return
 
-    def append_sample(self, sample_info: SampleInfo, max_stack_count: int = 30, start_time: Optional[int] = None):
-        """Append a sample to the timeline tail."""
+        if end_time <= self.end_time:
+            return
 
-        max_stack_count = max(1, max_stack_count)
+        top_end_time = self.frames[-1].end_time
+        node = self.frames[-1]
+        while True:
+            if node.end_time < top_end_time:
+                break
+            node.end_time = end_time
+
+            if len(node.child_frames) <= 0:
+                break
+            node = node.child_frames[-1]
+
+    def append(self, symbols: List[Symbol], sample_time: int, start_time: Optional[int] = None):
+        """Append a sample to the frame tail.
+
+        Args:
+            symbols: Symbols of sample.
+            sample_time: Timestamp of sample, nanosecond.
+            start_time: Only used when self is newly created.
+        """
+
+        if sample_time <= self.end_time:
+            return
+
+        if start_time and start_time <= 0:
+            start_time = None
+
+        # a newly created time frame
+        if len(self.frames) <= 0:
+            self.frames.append(StackFrame.create(symbols, (start_time or sample_time), sample_time))
+            return
+
+        last_stack_frame = self.frames[-1]
+        if symbols[0].symbol_name == last_stack_frame.symbol_name:
+            # try merge stack frames
+            last_stack_frame.extend(symbols, sample_time)
+        else:
+            # a new root stack frame
+            self.frames.append(StackFrame.create(symbols, self.end_time, sample_time))
+
+    def aggregate(self) -> Dict[str, AggregatedStackFrame]:
+        """Aggregate all stack frames to AggregatedStackFrame, the timeline will be seen as a function call.
+
+        Args:
+            root_name: The root name of AggregatedStackFrame.
+        """
+
+        return AggregatedStackFrame.create(self.frames)
+
+
+class Thread(FrameContainerBase):
+    """Thread, a container for time frames.
+
+    ```plain
+    +----------------------------------------------+
+    |                   Thread                     |
+    +----------------------------------------------+
+    |    Time Frame    |        Time Frame         |
+    +^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^+
+    |                   Samples                    |
+    +----------------------------------------------+
+    ```
+    """
+
+    def __init__(self, name: str, tid: int, max_stack_count: int = 30) -> None:
+        """Thread, a container for time frames.
+
+        Args:
+            name: Thread name, such as UnityMain or GameThread
+            tid: Thread id, sampled by simpleperf.
+        """
+
+        super().__init__()
+
+        self.thread_name = name
+        self.tid = tid
+        self.unique_name = f"{name}-{tid}"
+        self._max_stack_count = max_stack_count
+
+        self.frames: List[TimeFrame]
+        self._next_need_new_frame: bool = True
+        self.samples_count = 0
+
+    def __repr__(self) -> str:
+        values = ", ".join([
+            f"name={self.thread_name}",
+            f"tid={self.tid}",
+            f"duration={self.duration_ms:.6f}",
+            f"frames_count={len(self.frames)}",
+            f"samples_count={self.samples_count}"
+        ])
+        return f"Thread({values})"
+
+    def finish_current_frame(self, frame_end: int):
+        if len(self.frames) > 0:
+            self.frames[-1].extend(frame_end)
+        self._next_need_new_frame = True
+
+    def append(self, sample_info: SampleInfo):
+
+        sample_time = sample_info.sample.time
+        if sample_time <= self.end_time:
+            logger.warning("skip %s", sample_info)
+            return
 
         self.samples_count += 1
 
@@ -304,158 +589,30 @@ class Timeline:
             symbols.append(s.symbol)
         symbols.reverse()
 
-        symbols = symbols[:max_stack_count]
+        # limit the stack depth
+        symbols = symbols[:self._max_stack_count]
 
-        end_time = sample_info.sample.time
+        # a newly created thread, we need to add an empty time frame firstly
+        # or current frame need to be finished
+        if len(self.frames) <= 0 or self._next_need_new_frame:
+            self.frames.append(TimeFrame())
 
-        if self.end_time > 0:
-            start_time = self.end_time
-        elif start_time is None:
-            start_time = end_time - 1
+        if len(self.frames) <= 1:
+            self.frames[-1].append(symbols, sample_time)
+        else:
+            # use end_time to ensure the frames are continous
+            self.frames[-1].append(symbols, sample_time, self.frames[-2].end_time)
 
-        if end_time < self.end_time:
-            logger.warning("%s skipped", sample_info)
-            return
+        self._next_need_new_frame = False
 
-        # a newly created thread
-        if len(self.stack_frames) <= 0:
-            new_stack_frame = self._create_stack_frame(symbols, start_time, end_time)
-            self.stack_frames.append(new_stack_frame)
-            return
-
-        # try merge stack frames
-        current_stack_frame = self.stack_frames[-1]
-        top_end_time = current_stack_frame.end_time
-        for i, symbol in enumerate(symbols):
-            # if has same symbol name, try to merge it
-            # for sub frames, current_stack_frame.end_time may less than top_end_time
-            # which means that the two have the same father frame, but there is a gap between themselves.
-            # currently, we consider them as different calls, even they have the same symbols
-            if (
-                current_stack_frame.symbol_name == symbol.symbol_name
-                and current_stack_frame.end_time == top_end_time
-            ):
-                # the same symbols and calls, we extend the time
-                current_stack_frame.end_time = end_time
-
-                # continue to compare sub stack frames
-                if len(current_stack_frame.child_frames) > 0:
-                    current_stack_frame = current_stack_frame.child_frames[-1]
-
-                # current stack frames count less than the sample
-                # make the rest symbols a sub frame to current stack frame
-                elif i + 1 <= len(symbols) - 1:
-                    sub_stack_frame = self._create_stack_frame(symbols[i+1:], start_time, end_time)
-                    sub_stack_frame.father_frame = current_stack_frame
-                    current_stack_frame.child_frames.append(sub_stack_frame)
-                    return
-
-            # a new sub call to current father frame
-            else:
-                sub_stack_frame = self._create_stack_frame(symbols[i:],
-                                                           current_stack_frame.end_time,  # maybe we can use top_end_time or start_time?
-                                                           end_time)
-                father_frame = current_stack_frame.father_frame
-
-                # a new root frame
-                if father_frame is None:
-                    self.stack_frames.append(sub_stack_frame)
-
-                # a new sub frame of current father frame
-                else:
-                    sub_stack_frame.father_frame = father_frame
-                    father_frame.child_frames.append(sub_stack_frame)
-
-                return
-
-    def _aggregate_all(self, root: Optional[AggregatedStackFrame], child_frames: List[StackFrame]):
-        """Generate AggregatedStackFrame recursively. Modify root inplace."""
-
-        agg_child_frames = root.child_frames
-
-        for frame in child_frames:
-            if frame.symbol_name not in agg_child_frames:
-                agg_child_frames[frame.symbol_name] = AggregatedStackFrame(frame, root)
-            else:
-                agg_child_frames[frame.symbol_name].raw_stack_frames.append(frame)
-
-        for agg_frame in agg_child_frames.values():
-            child_frames = []
-            for raw_frame in agg_frame.raw_stack_frames:
-                child_frames.extend(raw_frame.child_frames)
-            self._aggregate_all(agg_frame, child_frames)
-
-    def aggregate(self, root_name: str) -> AggregatedStackFrame:
-        """Aggregate all stack frames to a root AggregatedStackFrame, the timeline will be seen as a function call.
-
-        Args:
-            root_name: The root name of AggregatedStackFrame.
-        """
-
-        root = AggregatedStackFrame(StackFrame(root_name, self.start_time, self.end_time))
-        self._aggregate_all(root, self.stack_frames)
-        return root
-
-
-class Thread:
-    def __init__(self, name: str, tid: int) -> None:
-        """Thread
-
-        Args:
-            name: Thread name, such as UnityMain or GameThread
-            tid: Thread id, sampled by simpleperf.
-        """
-
-        self.thread_name = name
-        self.tid = tid
-        self.unique_name = f"{name}-{tid}"
-
-        self.timelines: List[Timeline] = []
-
-    @property
-    def start_time(self) -> int:
-        """Returns start time of first top frame, returns -1 if no frames."""
-
-        if len(self.timelines) <= 0:
-            return -1
-        return self.timelines[0].start_time
-
-    @property
-    def end_time(self) -> int:
-        """Returns end time of last top frame, returns -1 if no frames."""
-
-        if len(self.timelines) <= 0:
-            return -1
-        return self.timelines[-1].end_time
-
-    @property
-    def start_time_us(self) -> float:
-        return self.start_time / 1000
-
-    @property
-    def end_time_us(self) -> float:
-        return self.end_time / 1000
-
-    @property
-    def duration(self) -> int:
-        return self.end_time - self.start_time
-
-    @property
-    def duration_us(self) -> float:
-        return self.duration / 1000
-
-    def append_sample(self, sample_info: SampleInfo, frame_end: int, max_stack_count: int = 30):
-        ...
-
-    def aggregate(self, use_unique_thread_name: bool = False) -> AggregatedStackFrame:
+    def aggregate_frames(self) -> List[Dict[str, AggregatedStackFrame]]:
         """Aggregate all stack frames to a root AggregatedStackFrame, the thread will be seen as a function call.
 
         Args:
             use_unique_thread_name: If true, set root thread name with thread id, else only thread name.
         """
 
-        tname = self.unique_name if use_unique_thread_name else self.thread_name
-        return super().aggregate(tname)
+        return [v.aggregate() for v in self.frames]
 
 
 class Perfdata:
@@ -466,19 +623,24 @@ class Perfdata:
         timestamps = []
         with open(filepath) as f:
             for line in f:
-                timestamps.append(int(line.strip().split()[0]))
+                timestamps.append(int(line.strip().split()[0]) * 1000)  # convert to nanosecond
 
         if len(timestamps) <= 2:
             return ValueError(f"Length of frame_timestamps must greater than 2, given {timestamps}")
         return timestamps
 
-    def __init__(self,
-                 record_file: StrPath,
-                 frame_timestamps_file: StrPath,
-                 symfs_dir: Optional[StrPath] = None,
-                 kallsyms_file: Optional[StrPath] = None,
-                 min_stack_count: int = 5,
-                 max_stack_count: int = 30) -> None:
+    def __init__(
+        self,
+        record_file: StrPath,
+        frame_timestamps_file: StrPath,
+        symfs_dir: Optional[StrPath] = None,
+        kallsyms_file: Optional[StrPath] = None,
+        min_stack_count: int = 5,
+        max_stack_count: int = 30,
+        important_thread_prefix=("GameThread", "RenderThread", "RHIThread", "UnityMain"),
+        *,
+        cache_samples: bool = True
+    ) -> None:
         """Perfdata
 
         Args:
@@ -488,6 +650,10 @@ class Perfdata:
             min_stack_count: Due to some uncertain sample errors, there may be some wrong samples with shallow stack frames,
                 use this value to filter such samples. When iterate sample, only samples which stack frames count greater than the value are yielded
             max_stack_count: Due to limitation of pb files (must smaller than 64 MB), so we limit the depth of stacks of samples here when we do aggregating.
+            important_thread_prefix: string prefix filters for thread name
+
+        Keyword Args:
+            cache_samples: Whether cache samples read from record file.
         """
 
         self.record_file = Path(record_file)
@@ -496,12 +662,20 @@ class Perfdata:
         self.kallsyms_file = Path(kallsyms_file) if kallsyms_file is not None else None
         self.min_stack_count = min_stack_count
         self.max_stack_count = max_stack_count
-        self.important_thread_prefix = [
-            "GameThread",
-            "RenderThread",
-            "RHIThread",
-            "UnityMain"
-        ]
+        self.important_thread_prefix = important_thread_prefix
+        self._samples: List[SampleInfo] = None
+        self.cache_samples = cache_samples
+
+    @property
+    def samples(self) -> List[SampleInfo]:
+        if self._samples is not None:
+            return self._samples
+
+        samples = sorted(self.iter_samples(), key=lambda x: x.sample.time)
+        logger.debug("Filtered samples count: %d", len(samples))
+        if self.cache_samples:
+            self._samples = samples
+        return samples
 
     def iter_samples(self):
         """Iterate samples in record file."""
@@ -544,6 +718,7 @@ class Perfdata:
             if now_time - last_time > 10:
                 last_time = now_time
                 logger.debug("%d samples iterated.", count)
+                gc.collect()
 
             # filter shallow sample
             if sample_info.call_chain.num_entries < self.min_stack_count:
@@ -566,12 +741,17 @@ class Perfdata:
                 Each list is sorted by thread samples count in descending order.
         """
 
-        samples = list(self.iter_samples())
-        samples.sort(key=lambda v: v.sample.time)
+        samples = self.samples
 
         threads: Dict[str, Thread] = {}
+
+        if self.frame_timestamps[0] >= samples[-1].sample.time or self.frame_timestamps[-1] <= samples[0].sample.time:
+            raise ValueError("frame timestamps no intersection with samples time")
+
         frame_idx = 1
         sample_idx = 0
+
+        # find first position where a sample in a frame
         while frame_idx < len(self.frame_timestamps) and sample_idx < len(samples):
             frame_start = self.frame_timestamps[frame_idx - 1]
             frame_end = self.frame_timestamps[frame_idx]
@@ -579,15 +759,34 @@ class Perfdata:
 
             # [ frame - 1 ) [ frame ) [ frame + 1 )
             #       ^
-            if sample_info.sample.time_us < frame_start:
+            if sample_info.sample.time < frame_start:
                 sample_idx += 1
                 continue
 
             # [ frame - 1 ) [ frame ) [ frame + 1 )
             #                            ^
-            if sample_info.sample.time_us >= frame_end:
+            if sample_info.sample.time >= frame_end:
                 frame_idx += 1
                 continue
+
+            break
+
+        # iterate samples in each frame
+        __count = 0
+        __last_time = time.time()
+        while frame_idx < len(self.frame_timestamps) and sample_idx < len(samples):
+            frame_start = self.frame_timestamps[frame_idx - 1]
+            frame_end = self.frame_timestamps[frame_idx]
+            sample_info = samples[sample_idx]
+
+            # here we should goto next frame
+            if sample_info.sample.time >= frame_end:
+                for t in threads.values():
+                    t.finish_current_frame(frame_end)
+                frame_idx += 1
+                continue
+
+            assert sample_info.sample.time >= frame_start
 
             tname = sample_info.sample.thread_name
             tid = sample_info.sample.tid
@@ -595,21 +794,22 @@ class Perfdata:
             if key in threads:
                 thread = threads[key]
             else:
-                thread = threads[key] = Thread(tname, tid)
+                thread = threads[key] = Thread(tname, tid, self.max_stack_count)
 
-            if len(thread.timelines) <= 0:
-                last_timeline = Timeline()
-                thread.timelines.append(last_timeline)
-            else:
-                last_timeline = thread.timelines[-1]
-                if last_timeline.end_time_us < frame_end:
+            thread.append(sample_info)
+            sample_idx += 1
 
-                thread.timelines.append(last_timeline)
-            else
+            __count += 1
+            __now_time = time.time()
+            if __now_time - __last_time > 10:
+                __last_time = __now_time
+                logger.debug("%d samples processed.", __count)
+
+        logger.debug("%d samples processed totally.", __count)
 
         result: Dict[str, List[Thread]] = {}
         for thread in threads.values():
-            logger.debug("Thread: %s, Sample count: %d", thread.unique_name, thread.samples_count)
+            logger.debug("Thread: %s, Samples count: %d", thread.unique_name, thread.samples_count)
 
             if thread.thread_name not in result:
                 result[thread.thread_name] = []
@@ -619,86 +819,3 @@ class Perfdata:
             v.sort(key=lambda x: x.samples_count, reverse=True)
 
         return result
-
-    def get_stats_pb_message(self, frame_timestamps: Optional[List[int]] = None, fake_root_name: str = "ThreadRoot") -> stats_pb2.AggregatedStatStackNode:
-        """Get AggregatedStatStackNode of all threads.
-            For threads has same name, only keep the thread has most samples.
-        """
-
-        threads = self.get_threads()
-
-        fake_root = stats_pb2.AggregatedStatStackNode()
-        fake_root.meta.event_name = fake_root_name
-
-        for v in threads.values():
-            important_thread = v[0]
-            logger.debug("Keep thread: %s", important_thread.unique_name)
-            fake_root.children.append(important_thread.aggregate().get_stats_pb_message(frame_timestamps))
-
-        return fake_root
-
-    def write_to_pa_file(self, path: StrPath, timestamps_path: Optional[StrPath] = None):
-        """Write perfdata to pa file. Just a stats_pb2.PreciseAnalysisResult object."""
-
-        if timestamps_path is None:
-            frame_timestamps = None
-        else:
-            frame_timestamps = self.read_frame_timestamps(timestamps_path)
-
-        agg_node = self.get_stats_pb_message(frame_timestamps)
-        logger.debug("Total %d threads kept", len(agg_node.children))
-
-        precise_result = stats_pb2.PreciseAnalysisResult()
-        precise_result.aggregated_stat_stack_node.CopyFrom(agg_node)
-        with open(path, "wb") as f:
-            f.write(precise_result.SerializeToString())
-
-
-def main():
-    from datetime import datetime
-    from .utils import upload_pa_file
-    parser = ArgumentParser()
-    parser.add_argument("-i", "--record-file", default="perf.data", help="Simpleperf record file.")
-    parser.add_argument("-o", "--output-dir", default="", help="output directory of pa file, default to current dir.")
-
-    parser.add_argument("-s", "--symfs", help="Set the path to find binaries with symbols and debug info.")
-    parser.add_argument("-k", "--kallsyms", help="Set the path to find kernel symbols.")
-    parser.add_argument("-t", "--frame-timestamps", help="Game frames timestamps file.")
-
-    parser.add_argument("--min-stack-count", type=int, default=5)
-
-    parser.add_argument("--pid", default="pid", help="projec id, such as LK or UC.")
-    parser.add_argument("--map", default="map", help="map name, such as Bigworld01 or farmland.")
-    parser.add_argument("--scene", default="scene", help="scene name, such as 10人综合 or any other identifier.")
-    parser.add_argument("--mobile", default="mobile", help="mobile, such as iphone14pro. There should be no spaces in mobile name.")
-    parser.add_argument("--quality", default="quality", help="quality, such as 高, 默认")
-    parser.add_argument("--version", default="version_num", help="such as 0.1.3_1")
-
-    parser.add_argument("--username", help="性能平台API用户名")
-    parser.add_argument("--usertoken", help="性能平台API用户令牌")
-    parser.add_argument("--upload-to-prod", action="store_true", help="上传至正式环境, 否则默认测试环境")
-
-    args = parser.parse_args()
-
-    pa_filename = "-".join([
-        args.pid,
-        args.map,
-        args.scene,
-        args.mobile,
-        args.quality,
-        args.version,
-        datetime.now().strftime("%Y%m%d%H%M%S"),
-        "Client"
-    ]) + ".pa"
-
-    pa_filepath = Path(args.output_dir, pa_filename)
-
-    perfdata = Perfdata(args.record_file, args.symfs, args.kallsyms, args.min_stack_count)
-    perfdata.write_to_pa_file(pa_filepath, args.frame_timestamps)
-
-    if args.username and args.usertoken:
-        upload_pa_file(args.pid, args.username, args.usertoken, pa_filepath, args.upload_to_prod)
-
-
-if __name__ == "__main__":
-    main()
