@@ -12,6 +12,8 @@ from .logger import logger
 
 StrPath = Union[str, os.PathLike]
 
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Simpleperf Sample Data Structures >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
 
 class Sample:
     def __init__(self, sample: reportlib.SampleStruct) -> None:
@@ -125,6 +127,10 @@ class SampleInfo:
             "call_chain": self.call_chain.json()
         }
 
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< Simpleperf Sample Data Structures <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Frame Data Structures >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
 
 class FrameBase:
     """Frame base class.
@@ -172,6 +178,34 @@ class FrameBase:
     @property
     def duration_ms(self) -> float:
         return self.duration_us / 1000
+
+
+class FrameContainerBase(FrameBase):
+    """Frame container base, consists of continious frames."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__()
+        self.frames: List[FrameBase] = []
+
+    @property
+    def is_empty(self) -> bool:
+        return len(self.frames) <= 0
+
+    @property
+    def start_time(self) -> int:
+        """Returns start time of first top frame, returns -1 if no frames."""
+
+        if len(self.frames) <= 0:
+            return -1
+        return self.frames[0].start_time
+
+    @property
+    def end_time(self) -> int:
+        """Returns end time of last top frame, returns -1 if no frames."""
+
+        if len(self.frames) <= 0:
+            return -1
+        return self.frames[-1].end_time
 
 
 class StackFrame(FrameBase):
@@ -230,6 +264,8 @@ class StackFrame(FrameBase):
         return top_node
 
     def __init__(self, symbol_name: str, start_time: int, end_time: int, father_frame: Optional["StackFrame"] = None) -> None:
+        """Create a stack frame without sub calls."""
+
         super().__init__()
 
         self.symbol_name = symbol_name
@@ -257,8 +293,10 @@ class StackFrame(FrameBase):
 
     def extend(self, symbols: List[Symbol], sample_time: int):
         """Extend the frame tail with given symbols, will try to merge from top to bottom if possible.
+            S1 calls S2 calls S3 ... calls Sn.
 
-        S1 calls S2 calls S3 ... calls Sn
+        Raises:
+            ValueError: Different top node symbol name.
         """
 
         if len(symbols) <= 0:
@@ -384,54 +422,14 @@ class AggregatedStackFrame(FrameBase):
     def call_count(self) -> int:
         return len(self.raw_stack_frames)
 
-    @property
-    def avg_duration(self) -> float:
-        return self.duration / self.call_count
-
-    @property
-    def avg_duration_us(self) -> float:
-        return self.avg_duration / 1000
-
-    @property
-    def avg_duration_ms(self) -> float:
-        return self.avg_duration_us / 1000
-
     def json(self) -> dict:
         k = f"{self.symbol_name}[{self.duration_ms:.3f},{self.call_count}]"
 
         if len(self.child_frames) <= 0:
             v = None
         else:
-            v = [c.json() for c in sorted(self.child_frames.values(), key=lambda x: x.avg_duration, reverse=True)]
+            v = [c.json() for c in sorted(self.child_frames.values(), key=lambda x: x.duration, reverse=True)]
         return {k: v}
-
-
-class FrameContainerBase(FrameBase):
-    """Frame container base"""
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__()
-        self.frames: List[FrameBase] = []
-
-    @property
-    def is_empty(self) -> bool:
-        return len(self.frames) <= 0
-
-    @property
-    def start_time(self) -> int:
-        """Returns start time of first top frame, returns -1 if no frames."""
-
-        if len(self.frames) <= 0:
-            return -1
-        return self.frames[0].start_time
-
-    @property
-    def end_time(self) -> int:
-        """Returns end time of last top frame, returns -1 if no frames."""
-
-        if len(self.frames) <= 0:
-            return -1
-        return self.frames[-1].end_time
 
 
 class TimeFrame(FrameContainerBase):
@@ -458,17 +456,17 @@ class TimeFrame(FrameContainerBase):
         """Extend the last call stack to end_time.
 
         ```plain
-        +------------------------------+~~~~~~~~~~+
-        |          Frame               ~          |
-        +------------------------------+~~~~~~~~~~+
-        |         Sub Frame            ~          |
-        +---------------+--------------+~~~~~~~~~~+
-        |    Sub Frame  |    | Sub |   ^          ^
-        +--------+------+    +-----+   ^          ^
-        ^        | Sub  |              ^          ^
-        ^        +------+              ^          ^
-        ^                              ^          ^
-        start_time                end_time' -> end_time
+            +------------------------------+~~~~~~~~~~+
+            |          Frame               ~          |
+            +------------------------------+~~~~~~~~~~+
+            |         Sub Frame            ~          |
+            +---------------+--------------+~~~~~~~~~~+
+            |    Sub Frame  |    | Sub |   ^          ^
+            +--------+------+    +-----+   ^          ^
+            ^        | Sub  |              ^          ^
+            ^        +------+              ^          ^
+            ^                              ^          ^
+        start_time                    end_time' -> end_time
         ```
         """
 
@@ -518,11 +516,7 @@ class TimeFrame(FrameContainerBase):
             self.frames.append(StackFrame.create(symbols, self.end_time, sample_time))
 
     def aggregate(self) -> Dict[str, AggregatedStackFrame]:
-        """Aggregate all stack frames to AggregatedStackFrame, the timeline will be seen as a function call.
-
-        Args:
-            root_name: The root name of AggregatedStackFrame.
-        """
+        """Aggregate all stack frames to AggregatedStackFrame."""
 
         return AggregatedStackFrame.create(self.frames)
 
@@ -547,6 +541,7 @@ class Thread(FrameContainerBase):
         Args:
             name: Thread name, such as UnityMain or GameThread
             tid: Thread id, sampled by simpleperf.
+            max_stack_count: Max stack count when appending samples.
         """
 
         super().__init__()
@@ -571,11 +566,17 @@ class Thread(FrameContainerBase):
         return f"Thread({values})"
 
     def finish_current_frame(self, frame_end: int):
+        """Finish current time frame, and next sample will be append to a new time frame."""
+
         if len(self.frames) > 0:
             self.frames[-1].extend(frame_end)
         self._next_need_new_frame = True
 
     def append(self, sample_info: SampleInfo):
+        """Append a sample.
+
+        Use finish_current_frame to control time frame range.
+        """
 
         sample_time = sample_info.sample.time
         if sample_time <= self.end_time:
@@ -592,8 +593,8 @@ class Thread(FrameContainerBase):
         # limit the stack depth
         symbols = symbols[:self._max_stack_count]
 
-        # a newly created thread, we need to add an empty time frame firstly
-        # or current frame need to be finished
+        # a newly created thread or current frame need to be finished
+        # we need to add an empty time frame firstly
         if len(self.frames) <= 0 or self._next_need_new_frame:
             self.frames.append(TimeFrame())
 
@@ -606,8 +607,8 @@ class Thread(FrameContainerBase):
         self._next_need_new_frame = False
 
     def aggregate_frames(self) -> List[AggregatedStackFrame]:
-        """Aggregate all stack frames to a root AggregatedStackFrame,
-            the thread will be seen as a function call.
+        """Aggregate all time frames to some AggregatedStackFrame,
+            each aggregated time frame has a fake root function call with thread name.
         """
 
         agg_frames = []
@@ -618,12 +619,22 @@ class Thread(FrameContainerBase):
 
         return agg_frames
 
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< Frame Data Structures <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
 
 class Perfdata:
     """Simple perf.data file parser."""
 
     @staticmethod
     def read_frame_timestamps(filepath: StrPath) -> List[int]:
+        """Read frame timestamps from plain txt file, only read first column.
+
+        The time unit of file is microsecond (us, 10^-6 second)
+
+        Raises:
+            ValueError: Timestamps is too few.
+        """
+
         timestamps = []
         with open(filepath) as f:
             for line in f:
@@ -649,12 +660,13 @@ class Perfdata:
 
         Args:
             record_file: perf.data file path, generated by simpelperf.
+            frame_timestamps_file: Frame timestamps file path.
             symfs_dir: Symbols directory.
             kallsyms_file: Kernel symbol file path.
             min_stack_count: Due to some uncertain sample errors, there may be some wrong samples with shallow stack frames,
                 use this value to filter such samples. When iterate sample, only samples which stack frames count greater than the value are yielded
-            max_stack_count: Due to limitation of pb files (must smaller than 64 MB), so we limit the depth of stacks of samples here when we do aggregating.
-            important_thread_prefix: string prefix filters for thread name
+            max_stack_count: Due to limitation of pb files (must smaller than 64 MB), we may limit the depth of stacks of each thread when we do aggregating.
+            important_thread_prefix: string prefix filters for thread name.
 
         Keyword Args:
             cache_samples: Whether cache samples read from record file.
@@ -701,8 +713,8 @@ class Perfdata:
         if "on-off-cpu" in supported_modes:
             lib.SetTraceOffCpuMode("on-off-cpu")  # on-off-cpu  mixed-on-off-cpu
 
-        count = 0
-        last_time = time.time()
+        __count = 0
+        __last_time = time.time()
         while True:
             sample = lib.GetNextSample()
 
@@ -717,12 +729,12 @@ class Perfdata:
                 lib.GetCallChainOfCurrentSample()
             )
 
-            count += 1
-            now_time = time.time()
-            if now_time - last_time > 10:
-                last_time = now_time
-                logger.debug("%d samples iterated.", count)
-                gc.collect()
+            __count += 1
+            __now_time = time.time()
+            if __now_time - __last_time > 10:
+                __last_time = __now_time
+                gc.collect()  # do collection manually to avoid long time auto-collection
+                logger.debug("%d samples iterated.", __count)
 
             # filter shallow sample
             if sample_info.call_chain.num_entries < self.min_stack_count:
@@ -734,7 +746,8 @@ class Perfdata:
 
             yield sample_info
 
-        logger.debug("All %d samples iterate done.", count)
+        gc.collect()
+        logger.debug("%d samples iterated totally.", __count)
 
     def get_threads(self) -> Dict[str, List[Thread]]:
         """Get threads from record file.
@@ -743,6 +756,9 @@ class Perfdata:
             threads: A dict maps thread_name to thread.
                 There may be threads have the same thread_name, but different unique_name.
                 Each list is sorted by thread samples count in descending order.
+
+        Raises:
+            ValueError: Invalid frame timestamps to samples.
         """
 
         samples = self.samples
@@ -807,13 +823,14 @@ class Perfdata:
             __now_time = time.time()
             if __now_time - __last_time > 10:
                 __last_time = __now_time
+                gc.collect()
                 logger.debug("%d samples processed.", __count)
 
         logger.debug("%d samples processed totally.", __count)
 
         result: Dict[str, List[Thread]] = {}
         for thread in threads.values():
-            logger.debug("Thread: %s, Samples count: %d", thread.unique_name, thread.samples_count)
+            logger.debug("%s", thread)
 
             if thread.thread_name not in result:
                 result[thread.thread_name] = []
@@ -822,4 +839,5 @@ class Perfdata:
         for v in result.values():
             v.sort(key=lambda x: x.samples_count, reverse=True)
 
+        gc.collect()
         return result
