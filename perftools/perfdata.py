@@ -688,7 +688,7 @@ class Perfdata:
             return self._samples
 
         samples = sorted(self.iter_samples(), key=lambda x: x.sample.time)
-        logger.debug("Filtered samples count: %d", len(samples))
+        logger.info("Filtered samples count: %d", len(samples))
         if self.cache_samples:
             self._samples = samples
         return samples
@@ -747,7 +747,7 @@ class Perfdata:
             yield sample_info
 
         gc.collect()
-        logger.debug("%d samples iterated totally.", __count)
+        logger.info("%d samples iterated totally.", __count)
 
     def get_threads(self) -> Dict[str, List[Thread]]:
         """Get threads from record file.
@@ -826,7 +826,7 @@ class Perfdata:
                 gc.collect()
                 logger.debug("%d samples processed.", __count)
 
-        logger.debug("%d samples processed totally.", __count)
+        logger.info("%d samples processed totally.", __count)
 
         result: Dict[str, List[Thread]] = {}
         for thread in threads.values():
