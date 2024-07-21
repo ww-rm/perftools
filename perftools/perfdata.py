@@ -534,13 +534,14 @@ class Thread(FrameContainerBase):
     ```
     """
 
-    def __init__(self, name: str, tid: int, max_stack_count: int = 30) -> None:
+    def __init__(self, name: str, tid: int, max_stack_count: int = 30, exclude_kernel_symbol: bool = True) -> None:
         """Thread, a container for time frames.
 
         Args:
             name: Thread name, such as UnityMain or GameThread
             tid: Thread id, sampled by simpleperf.
             max_stack_count: Max stack count when appending samples.
+            exclude_kernel_symbol: Strip kallsyms symbols from tail of call chain.
         """
 
         super().__init__()
@@ -548,7 +549,8 @@ class Thread(FrameContainerBase):
         self.thread_name = name
         self.tid = tid
         self.unique_name = f"{name}-{tid}"
-        self._max_stack_count = max_stack_count
+        self.max_stack_count = max_stack_count
+        self.exclude_kernel_symbol = exclude_kernel_symbol
 
         self.frames: List[TimeFrame]
         self._next_need_new_frame: bool = True
@@ -582,15 +584,21 @@ class Thread(FrameContainerBase):
             logger.warning("skip %s", sample_info)
             return
 
-        self.samples_count += 1
-
         symbols = [sample_info.symbol]
         for s in sample_info.call_chain.entries:
             symbols.append(s.symbol)
         symbols.reverse()
 
         # limit the stack depth
-        symbols = symbols[:self._max_stack_count]
+        symbols = symbols[:self.max_stack_count]
+
+        # strip kernel symbols in tail
+        if self.exclude_kernel_symbol:
+            while len(symbols) > 0 and "kernel.kallsyms" in symbols[-1].symbol_name:
+                symbols.pop()
+
+        if len(symbols) <= 0:
+            return
 
         # a newly created thread or current frame need to be finished
         # we need to add an empty time frame firstly
@@ -603,6 +611,7 @@ class Thread(FrameContainerBase):
             # use end_time to ensure the frames are continous
             self.frames[-1].append(symbols, sample_time, self.frames[-2].end_time)
 
+        self.samples_count += 1
         self._next_need_new_frame = False
 
     def aggregate_frames(self) -> List[AggregatedStackFrame]:
@@ -651,6 +660,7 @@ class Perfdata:
         kallsyms_file: Optional[StrPath] = None,
         min_stack_count: int = 5,
         max_stack_count: int = 30,
+        exclude_kernel_symbol: bool = True,
         important_thread_prefix=("GameThread", "RenderThread", "RHIThread", "UnityMain"),
         *,
         cache_samples: bool = False
@@ -665,6 +675,7 @@ class Perfdata:
             min_stack_count: Due to some uncertain sample errors, there may be some wrong samples with shallow stack frames,
                 use this value to filter such samples. When iterate sample, only samples which stack frames count greater than the value are yielded
             max_stack_count: Due to limitation of pb files (must smaller than 64 MB), we may limit the depth of stacks of each thread when we do aggregating.
+            exclude_kernel_symbol: Strip kallsyms symbols from tail of call chain.
             important_thread_prefix: string prefix filters for thread name.
 
         Keyword Args:
@@ -677,6 +688,7 @@ class Perfdata:
         self.kallsyms_file = Path(kallsyms_file) if kallsyms_file is not None else None
         self.min_stack_count = min_stack_count
         self.max_stack_count = max_stack_count
+        self.exclude_kernel_symbol = exclude_kernel_symbol
         self.important_thread_prefix = important_thread_prefix
         self._samples: List[SampleInfo] = None
         self.cache_samples = cache_samples
@@ -811,7 +823,7 @@ class Perfdata:
             if key in threads:
                 thread = threads[key]
             else:
-                thread = threads[key] = Thread(tname, tid, self.max_stack_count)
+                thread = threads[key] = Thread(tname, tid, self.max_stack_count, self.exclude_kernel_symbol)
 
             thread.append(sample_info)
             sample_idx += 1
