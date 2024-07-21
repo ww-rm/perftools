@@ -1,6 +1,5 @@
 """perf.data parser module."""
 
-import gc
 import os
 import time
 from pathlib import Path
@@ -654,7 +653,7 @@ class Perfdata:
         max_stack_count: int = 30,
         important_thread_prefix=("GameThread", "RenderThread", "RHIThread", "UnityMain"),
         *,
-        cache_samples: bool = True
+        cache_samples: bool = False
     ) -> None:
         """Perfdata
 
@@ -733,7 +732,6 @@ class Perfdata:
             __now_time = time.time()
             if __now_time - __last_time > 10:
                 __last_time = __now_time
-                gc.collect()  # do collection manually to avoid long time auto-collection
                 logger.debug("%d samples iterated.", __count)
 
             # filter shallow sample
@@ -746,7 +744,6 @@ class Perfdata:
 
             yield sample_info
 
-        gc.collect()
         logger.info("%d samples iterated totally.", __count)
 
     def get_threads(self) -> Dict[str, List[Thread]]:
@@ -823,7 +820,6 @@ class Perfdata:
             __now_time = time.time()
             if __now_time - __last_time > 10:
                 __last_time = __now_time
-                gc.collect()
                 logger.debug("%d samples processed.", __count)
 
         logger.info("%d samples processed totally.", __count)
@@ -839,5 +835,4 @@ class Perfdata:
         for v in result.values():
             v.sort(key=lambda x: x.samples_count, reverse=True)
 
-        gc.collect()
         return result
