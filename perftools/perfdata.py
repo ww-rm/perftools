@@ -96,34 +96,50 @@ class CallChain:
 class SampleInfo:
     """Aggregated sample information.
 
-    Including four mainly used attributes: sample, event, symbol and call_chain
+    Including some mainly used attributes.
     """
 
-    def __init__(self,
-                 sample: reportlib.SampleStruct,
-                 event: reportlib.EventStruct,
-                 symbol: reportlib.SymbolStruct,
-                 call_chain: reportlib.CallChainStructure) -> None:
-        self.sample = Sample(sample)
-        self.event = Event(event)
-        self.symbol = Symbol(symbol)
-        self.call_chain = CallChain(call_chain)
+    def __init__(
+        self,
+        sample: reportlib.SampleStruct,
+        symbol: reportlib.SymbolStruct,
+        call_chain: reportlib.CallChainStructure,
+        *,
+        max_stack_count: int = 30,
+        exclude_kernel_symbol: bool = True
+    ) -> None:
+        self.thread_name: str = sample.thread_comm
+        self.tid: int = sample.tid
+        self.time: int = sample.time
+        self.symbols: List[str] = []
+
+        for i in range(call_chain.nr - 1, -1, -1):
+            name = call_chain.entries[i].symbol.symbol_name
+            if exclude_kernel_symbol and "kernel.kallsyms" in name:
+                break
+            self.symbols.append(name)
+            if len(self.symbols) >= max_stack_count:
+                break
+        else:
+            if not (exclude_kernel_symbol and "kernel.kallsyms" in symbol.symbol_name):
+                self.symbols.append(symbol.symbol_name)
 
     def __repr__(self) -> str:
         values = ", ".join([
-            f"thread={self.sample.thread_name}-{self.sample.tid}",
-            f"symbol={self.symbol.symbol_name}",
-            f"time={self.sample.time}",
-            f"period=({self.sample.period})"
+            f"thread={self.thread_name}-{self.tid}",
+            f"symbols_count={len(self.symbols)}",
+            f"time={self.time}",
         ])
         return f"SampleInfo({values})"
 
     def json(self) -> dict:
         return {
-            "sample": self.sample.json(),
-            "event": self.event.json(),
-            "symbol": self.symbol.json(),
-            "call_chain": self.call_chain.json()
+            "sample": {
+                "thread_name": self.thread_name,
+                "tid": self.tid,
+                "time": self.time,
+            },
+            "symbols": self.symbols,
         }
 
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< Simpleperf Sample Data Structures <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
@@ -229,7 +245,7 @@ class StackFrame(FrameBase):
     """
 
     @staticmethod
-    def create(symbols: List[Symbol], start_time: int, end_time: int, father_frame: Optional["StackFrame"] = None):
+    def create(symbol_names: List[str], start_time: int, end_time: int, father_frame: Optional["StackFrame"] = None):
         """Create stack frames with symbols and times.
 
         ```plain
@@ -249,14 +265,14 @@ class StackFrame(FrameBase):
         ```
         """
 
-        if len(symbols) <= 0:
+        if len(symbol_names) <= 0:
             raise ValueError("Empty symbols")
 
-        top_node = StackFrame(symbols[0].symbol_name, start_time, end_time, father_frame)
+        top_node = StackFrame(symbol_names[0], start_time, end_time, father_frame)
 
         node = top_node
-        for symbol in symbols[1:]:
-            sub_node = StackFrame(symbol.symbol_name, start_time, end_time, node)
+        for symbol in symbol_names[1:]:
+            sub_node = StackFrame(symbol, start_time, end_time, node)
             node.child_frames.append(sub_node)
             node = sub_node
 
@@ -290,7 +306,7 @@ class StackFrame(FrameBase):
     def end_time(self, value: int):
         self._end_time = value
 
-    def extend(self, symbols: List[Symbol], sample_time: int):
+    def extend(self, symbol_names: List[str], sample_time: int):
         """Extend the frame tail with given symbols, will try to merge from top to bottom if possible.
             S1 calls S2 calls S3 ... calls Sn.
 
@@ -298,24 +314,24 @@ class StackFrame(FrameBase):
             ValueError: Different top node symbol name.
         """
 
-        if len(symbols) <= 0:
+        if len(symbol_names) <= 0:
             return
 
         if sample_time <= self.end_time:
             return
 
-        if self.symbol_name != symbols[0].symbol_name:
+        if self.symbol_name != symbol_names[0]:
             raise ValueError("Can't extend to different top node.")
 
         top_end_time = self.end_time
         current_stack_frame = self
-        for i, symbol in enumerate(symbols):
+        for i, symbol_name in enumerate(symbol_names):
             # if has same symbol name, try to merge it
             # for sub frames, current_stack_frame.end_time may less than top_end_time
             # which means that the two have the same father frame, but there is a gap between themselves.
             # currently, we consider them as different calls, even they have the same symbols
             if (
-                current_stack_frame.symbol_name == symbol.symbol_name
+                current_stack_frame.symbol_name == symbol_name
                 and current_stack_frame.end_time == top_end_time
             ):
                 # the same symbols and calls, we extend the time
@@ -327,8 +343,8 @@ class StackFrame(FrameBase):
 
                 # current stack frames count less than the sample
                 # make the rest symbols a sub frame to current stack frame
-                elif i + 1 <= len(symbols) - 1:
-                    sub_stack_frame = self.create(symbols[i+1:], top_end_time, sample_time, current_stack_frame)
+                elif i + 1 <= len(symbol_names) - 1:
+                    sub_stack_frame = self.create(symbol_names[i+1:], top_end_time, sample_time, current_stack_frame)
                     current_stack_frame.child_frames.append(sub_stack_frame)
                     return
 
@@ -337,7 +353,7 @@ class StackFrame(FrameBase):
                 father_frame = current_stack_frame.father_frame
                 assert father_frame is not None
 
-                sub_stack_frame = self.create(symbols[i:],
+                sub_stack_frame = self.create(symbol_names[i:],
                                               current_stack_frame.end_time,  # maybe we can use top_end_time ?
                                               sample_time,
                                               father_frame)
@@ -486,7 +502,7 @@ class TimeFrame(FrameContainerBase):
                 break
             node = node.child_frames[-1]
 
-    def append(self, symbols: List[Symbol], sample_time: int, start_time: Optional[int] = None):
+    def append(self, symbol_names: List[str], sample_time: int, start_time: Optional[int] = None):
         """Append a sample to the frame tail.
 
         Args:
@@ -503,16 +519,16 @@ class TimeFrame(FrameContainerBase):
 
         # a newly created time frame
         if len(self.frames) <= 0:
-            self.frames.append(StackFrame.create(symbols, (start_time or sample_time), sample_time))
+            self.frames.append(StackFrame.create(symbol_names, (start_time or sample_time), sample_time))
             return
 
         last_stack_frame = self.frames[-1]
-        if symbols[0].symbol_name == last_stack_frame.symbol_name:
+        if symbol_names[0] == last_stack_frame.symbol_name:
             # try merge stack frames
-            last_stack_frame.extend(symbols, sample_time)
+            last_stack_frame.extend(symbol_names, sample_time)
         else:
             # a new root stack frame
-            self.frames.append(StackFrame.create(symbols, self.end_time, sample_time))
+            self.frames.append(StackFrame.create(symbol_names, self.end_time, sample_time))
 
     def aggregate(self) -> Dict[str, AggregatedStackFrame]:
         """Aggregate all stack frames to AggregatedStackFrame."""
@@ -534,7 +550,7 @@ class Thread(FrameContainerBase):
     ```
     """
 
-    def __init__(self, name: str, tid: int, max_stack_count: int = 30, exclude_kernel_symbol: bool = True) -> None:
+    def __init__(self, name: str, tid: int) -> None:
         """Thread, a container for time frames.
 
         Args:
@@ -549,8 +565,6 @@ class Thread(FrameContainerBase):
         self.thread_name = name
         self.tid = tid
         self.unique_name = f"{name}-{tid}"
-        self.max_stack_count = max_stack_count
-        self.exclude_kernel_symbol = exclude_kernel_symbol
 
         self.frames: List[TimeFrame]
         self._next_need_new_frame: bool = True
@@ -579,25 +593,12 @@ class Thread(FrameContainerBase):
         Use finish_current_frame to control time frame range.
         """
 
-        sample_time = sample_info.sample.time
-        if sample_time <= self.end_time:
+        if sample_info.time <= self.end_time:
             logger.warning("skip %s", sample_info)
             return
 
-        symbols = [sample_info.symbol]
-        for s in sample_info.call_chain.entries:
-            symbols.append(s.symbol)
-        symbols.reverse()
-
-        # limit the stack depth
-        symbols = symbols[:self.max_stack_count]
-
-        # strip kernel symbols in tail
-        if self.exclude_kernel_symbol:
-            while len(symbols) > 0 and "kernel.kallsyms" in symbols[-1].symbol_name:
-                symbols.pop()
-
-        if len(symbols) <= 0:
+        if len(sample_info.symbols) <= 0:
+            logger.warning("skip %s", sample_info)
             return
 
         # a newly created thread or current frame need to be finished
@@ -606,10 +607,10 @@ class Thread(FrameContainerBase):
             self.frames.append(TimeFrame())
 
         if len(self.frames) <= 1:
-            self.frames[-1].append(symbols, sample_time)
+            self.frames[-1].append(sample_info.symbols, sample_info.time)
         else:
             # use end_time to ensure the frames are continous
-            self.frames[-1].append(symbols, sample_time, self.frames[-2].end_time)
+            self.frames[-1].append(sample_info.symbols, sample_info.time, self.frames[-2].end_time)
 
         self.samples_count += 1
         self._next_need_new_frame = False
@@ -698,7 +699,7 @@ class Perfdata:
         if self._samples is not None:
             return self._samples
 
-        samples = sorted(self.iter_samples(), key=lambda x: x.sample.time)
+        samples = sorted(self.iter_samples(), key=lambda x: x.time)
         logger.info("Filtered samples count: %d", len(samples))
         if self.cache_samples:
             self._samples = samples
@@ -733,26 +734,29 @@ class Perfdata:
                 lib.Close()
                 break
 
-            sample_info = SampleInfo(
-                sample,
-                lib.GetEventOfCurrentSample(),
-                lib.GetSymbolOfCurrentSample(),
-                lib.GetCallChainOfCurrentSample()
-            )
-
             __count += 1
             __now_time = time.time()
             if __now_time - __last_time > 10:
                 __last_time = __now_time
                 logger.debug("%d samples iterated.", __count)
 
-            # filter shallow sample
-            if sample_info.call_chain.num_entries < self.min_stack_count:
+            # filter threads we do not care
+            if not any(sample.thread_comm.startswith(v) for v in self.important_thread_prefix):
                 continue
 
-            # filter threads we do not care
-            if not any(sample_info.sample.thread_name.startswith(v) for v in self.important_thread_prefix):
+            call_chain = lib.GetCallChainOfCurrentSample()
+
+            # filter shallow sample
+            if call_chain.nr < self.min_stack_count:
                 continue
+
+            sample_info = SampleInfo(
+                sample,
+                lib.GetSymbolOfCurrentSample(),
+                call_chain,
+                max_stack_count=self.max_stack_count,
+                exclude_kernel_symbol=self.exclude_kernel_symbol
+            )
 
             yield sample_info
 
@@ -774,7 +778,7 @@ class Perfdata:
 
         threads: Dict[str, Thread] = {}
 
-        if self.frame_timestamps[0] >= samples[-1].sample.time or self.frame_timestamps[-1] <= samples[0].sample.time:
+        if self.frame_timestamps[0] >= samples[-1].time or self.frame_timestamps[-1] <= samples[0].time:
             raise ValueError("frame timestamps no intersection with samples time")
 
         frame_idx = 1
@@ -788,13 +792,13 @@ class Perfdata:
 
             # [ frame - 1 ) [ frame ) [ frame + 1 )
             #       ^
-            if sample_info.sample.time < frame_start:
+            if sample_info.time < frame_start:
                 sample_idx += 1
                 continue
 
             # [ frame - 1 ) [ frame ) [ frame + 1 )
             #                            ^
-            if sample_info.sample.time >= frame_end:
+            if sample_info.time >= frame_end:
                 frame_idx += 1
                 continue
 
@@ -809,21 +813,21 @@ class Perfdata:
             sample_info = samples[sample_idx]
 
             # here we should goto next frame
-            if sample_info.sample.time >= frame_end:
+            if sample_info.time >= frame_end:
                 for t in threads.values():
                     t.finish_current_frame(frame_end)
                 frame_idx += 1
                 continue
 
-            assert sample_info.sample.time >= frame_start
+            assert sample_info.time >= frame_start
 
-            tname = sample_info.sample.thread_name
-            tid = sample_info.sample.tid
+            tname = sample_info.thread_name
+            tid = sample_info.tid
             key = f"{tname}-{tid}"
             if key in threads:
                 thread = threads[key]
             else:
-                thread = threads[key] = Thread(tname, tid, self.max_stack_count, self.exclude_kernel_symbol)
+                thread = threads[key] = Thread(tname, tid)
 
             thread.append(sample_info)
             sample_idx += 1
