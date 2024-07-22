@@ -674,7 +674,7 @@ class Perfdata:
             min_stack_count: Due to some uncertain sample errors, there may be some wrong samples with shallow stack frames,
                 use this value to filter such samples. When iterate sample, only samples which stack frames count greater than the value are yielded
             max_stack_count: Due to limitation of pb files (must smaller than 64 MB), we may limit the depth of stacks of each thread when we do aggregating.
-            exclude_kernel_symbol: Strip kallsyms symbols from tail of call chain.
+            include_kernel_symbol: Whether strip kallsyms symbols from tail of call chain.
             important_thread_prefix: string prefix filters for thread name.
 
         Keyword Args:
