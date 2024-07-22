@@ -106,7 +106,7 @@ class SampleInfo:
         call_chain: reportlib.CallChainStructure,
         *,
         max_stack_count: int = 30,
-        exclude_kernel_symbol: bool = True
+        include_kernel_symbol: bool = False
     ) -> None:
         self.thread_name: str = sample.thread_comm
         self.tid: int = sample.tid
@@ -115,13 +115,13 @@ class SampleInfo:
 
         for i in range(call_chain.nr - 1, -1, -1):
             name = call_chain.entries[i].symbol.symbol_name
-            if exclude_kernel_symbol and "kernel.kallsyms" in name:
+            if not include_kernel_symbol and "kernel.kallsyms" in name:
                 break
             self.symbols.append(name)
             if len(self.symbols) >= max_stack_count:
                 break
         else:
-            if not (exclude_kernel_symbol and "kernel.kallsyms" in symbol.symbol_name):
+            if include_kernel_symbol or "kernel.kallsyms" not in symbol.symbol_name:
                 self.symbols.append(symbol.symbol_name)
 
     def __repr__(self) -> str:
@@ -661,10 +661,8 @@ class Perfdata:
         kallsyms_file: Optional[StrPath] = None,
         min_stack_count: int = 5,
         max_stack_count: int = 30,
-        exclude_kernel_symbol: bool = True,
+        include_kernel_symbol: bool = False,
         important_thread_prefix=("GameThread", "RenderThread", "RHIThread", "UnityMain"),
-        *,
-        cache_samples: bool = False
     ) -> None:
         """Perfdata
 
@@ -676,7 +674,7 @@ class Perfdata:
             min_stack_count: Due to some uncertain sample errors, there may be some wrong samples with shallow stack frames,
                 use this value to filter such samples. When iterate sample, only samples which stack frames count greater than the value are yielded
             max_stack_count: Due to limitation of pb files (must smaller than 64 MB), we may limit the depth of stacks of each thread when we do aggregating.
-            exclude_kernel_symbol: Strip kallsyms symbols from tail of call chain.
+            include_kernel_symbol: Whether strip kallsyms symbols from tail of call chain.
             important_thread_prefix: string prefix filters for thread name.
 
         Keyword Args:
@@ -689,21 +687,8 @@ class Perfdata:
         self.kallsyms_file = Path(kallsyms_file) if kallsyms_file is not None else None
         self.min_stack_count = min_stack_count
         self.max_stack_count = max_stack_count
-        self.exclude_kernel_symbol = exclude_kernel_symbol
+        self.include_kernel_symbol = include_kernel_symbol
         self.important_thread_prefix = important_thread_prefix
-        self._samples: List[SampleInfo] = None
-        self.cache_samples = cache_samples
-
-    @property
-    def samples(self) -> List[SampleInfo]:
-        if self._samples is not None:
-            return self._samples
-
-        samples = sorted(self.iter_samples(), key=lambda x: x.time)
-        logger.info("Filtered samples count: %d", len(samples))
-        if self.cache_samples:
-            self._samples = samples
-        return samples
 
     def iter_samples(self):
         """Iterate samples in record file."""
@@ -755,7 +740,7 @@ class Perfdata:
                 lib.GetSymbolOfCurrentSample(),
                 call_chain,
                 max_stack_count=self.max_stack_count,
-                exclude_kernel_symbol=self.exclude_kernel_symbol
+                include_kernel_symbol=self.include_kernel_symbol
             )
 
             yield sample_info
@@ -774,7 +759,8 @@ class Perfdata:
             ValueError: Invalid frame timestamps to samples.
         """
 
-        samples = self.samples
+        samples = sorted(self.iter_samples(), key=lambda x: x.time)
+        logger.info("Filtered samples count: %d", len(samples))
 
         threads: Dict[str, Thread] = {}
 
