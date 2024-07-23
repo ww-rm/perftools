@@ -635,6 +635,12 @@ class Perfdata:
     """Simple perf.data file parser."""
 
     @staticmethod
+    def is_perfdata(filepath: StrPath) -> bool:
+        with Path(filepath).open("rb") as f:
+            header = f.read(7)
+        return header == b"PERFILE"
+
+    @staticmethod
     def read_frame_timestamps(filepath: StrPath) -> List[int]:
         """Read frame timestamps from plain txt file, only read first column.
 
