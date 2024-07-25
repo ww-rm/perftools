@@ -118,14 +118,14 @@ class Simpleperf:
         if self._adb.shell(serial, "chmod", "a+x", self.DEVICE_BIN_PATH).returncode != 0:
             raise RuntimeError(f"chmod faild on device {serial}")
 
-    def begin_record(self, serial: str, package_name: str, freq: int = 4000, duration: int = 0) -> bool:
+    def begin_record(self, serial: str, package_name: str, freq: int = 4000, max_duration: int = 1200) -> bool:
         """Execute simpleperf record command and begin record.
 
         Args:
             serial: serial of device.
             package_name: Package name of application to be recorded.
             freq: Frequency of record.
-            duration: Duration to be recorded, if less than zero, will record infinitly until stop_all is called.
+            max_duration: Max duration to be recorded, if less than zero, will record infinitly until stop_all is called.
         """
 
         if self.is_running(serial):
@@ -147,8 +147,10 @@ class Simpleperf:
             "--no-cut-samples",
         ]
 
-        if duration > 0:
-            args += ["--duration", duration]
+        if max_duration > 0:
+            args += ["--duration", max_duration]
+        else:
+            logger.warning("Record infinitely.")
 
         self._proc = self._adb.shell(serial, *args, blocking=False)
         return True
@@ -159,11 +161,11 @@ class Simpleperf:
         return self._adb.pull(serial, self.DEVICE_PERFDATA_PATH, local_perfdata_path).returncode == 0
 
 
-def do_record(serial: str, package_name: str, freq: int = 4000, duration: int = 0, output_path: StrPath = "perf.data"):
+def do_record(serial: str, package_name: str, freq: int = 4000, max_duration: int = 1200, output_path: StrPath = "perf.data"):
     """Do record, can use Ctr-C to stop it early."""
 
     simpleperf = Simpleperf()
-    simpleperf.begin_record(serial, package_name, freq, duration)
+    simpleperf.begin_record(serial, package_name, freq, max_duration)
     try:
         while simpleperf.is_running(serial):
             time.sleep(1)
@@ -178,7 +180,7 @@ def main():
     parser.add_argument("-p", "--app", help="package name of app to be profiled", required=True)
     parser.add_argument("-o", "--output", default="perf.data", help="output path of perf data collected in device")
     parser.add_argument("-f", "--freq", type=int, default=4000, help="frequency of simpleperf record")
-    parser.add_argument("-d", "--duration", type=int, default=0, help="duration of simpleperf record")
+    parser.add_argument("-d", "--max-duration", type=int, default=1200, help="max duration of simpleperf record")
 
     args = parser.parse_args()
 
