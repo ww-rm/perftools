@@ -68,11 +68,14 @@ class Simpleperf:
 
         # SIGINT = 2
         has_killed = False
+        wait_time = 1
         while self.is_running(serial):
             if not has_killed:
                 self._adb.shell(serial, "pkill", "-l", "2", "simpleperf")
                 has_killed = True
-            time.sleep(1)
+            time.sleep(wait_time)
+            if wait_time < 10:
+                wait_time += 1
 
         if self._proc is not None and self._proc.returncode is None:
             self._proc.wait()
